@@ -71,17 +71,29 @@ def _extract_summary(text):
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = _learner(update)
     db.ensure_user_state(uid)
-    if not db.is_onboarded(uid):                  # новый пользователь -> онбординг + placement
+    if not db.is_onboarded(uid):                  # новый пользователь -> онбординг
         await _begin_onboarding(update, ctx)
         return
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌅 Новые слова", callback_data="mode:new"),
+    # вернувшийся: один ведущий CTA по самому нужному действию + полное меню ниже
+    due, _ = db.due_today(uid)
+    n_due = len(due)
+    rows = []
+    if n_due:
+        rows.append([InlineKeyboardButton(f"☀️ Повторить ({n_due})", callback_data="mode:review")])
+        lead = f"С возвращением! 👋\nСегодня {n_due} слов(а) ждут повторения — закрепим?"
+    elif db.new_remaining(uid):
+        rows.append([InlineKeyboardButton("🌅 Учить новые", callback_data="mode:new")])
+        lead = "С возвращением! 👋\nПовторять нечего ✅ — берём новые слова?"
+    else:
+        lead = "С возвращением! 👋\nВсё повторено, новых пока нет — поболтаем, тема или /read?"
+    rows += [
+        [InlineKeyboardButton("🌅 Новые", callback_data="mode:new"),
          InlineKeyboardButton("☀️ Повторение", callback_data="mode:review")],
         [InlineKeyboardButton("🎭 Сценарий", callback_data="mode:scenario"),
          InlineKeyboardButton("🗣️ Поток", callback_data="mode:flow")],
         [InlineKeyboardButton("📚 Темы (учить по теме)", callback_data="topics")],
-    ])
-    await update.message.reply_text(prompts.BLOCKS["/start"], reply_markup=kb)
+    ]
+    await update.message.reply_text(lead, reply_markup=InlineKeyboardMarkup(rows))
 
 # ---------- онбординг: органичный само-выбор темпа (БЕЗ присвоения уровня) ----------
 _PACE = {"A2": "🌱 С самых основ", "B1": "🚶 Уже кое-что знаю", "B2": "🏃 Уверенно общаюсь"}
@@ -239,9 +251,12 @@ async def _typing(msg):
         pass
 
 def _deep_kb(wd):
-    """Кнопки разбора: лупа + слово + перевод (без слова «Глубже»)."""
-    return InlineKeyboardMarkup([[InlineKeyboardButton(f"🔍 {x['word']} — {x['ru']}",
-                                  callback_data=f"deep:{x['word_id']}")] for x in wd[:5]])
+    """Кнопки разбора: лупа + слово + перевод, и снизу — продолжения (не терять импульс)."""
+    rows = [[InlineKeyboardButton(f"🔍 {x['word']} — {x['ru']}", callback_data=f"deep:{x['word_id']}")]
+            for x in wd[:5]]
+    rows.append([InlineKeyboardButton("➡️ Ещё новые", callback_data="mode:new"),
+                 InlineKeyboardButton("☀️ Повторить", callback_data="mode:review")])
+    return InlineKeyboardMarkup(rows)
 
 async def _deliver_lesson(msg, ctx, uid, wd):
     """Лёгкое знакомство со словами + ввод в SRS. Глубина (корень/семья/слои) — под кнопкой 🔍."""
@@ -574,7 +589,27 @@ async def on_deep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         wid = int(q.data.split(":")[1])
     except (ValueError, IndexError):
         return
-    await q.message.reply_text(db.deep_view(wid) or "Нет данных по слову.")
+    branch = db.branch_words(wid, _learner(update))
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        f"🌳 Открыть ветку ({len(branch)})", callback_data=f"branch:{wid}")]]) if branch else None
+    await q.message.reply_text(db.deep_view(wid) or "Нет данных по слову.", reply_markup=kb)
+
+async def on_branch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«Открыть ветку»: выучить однокоренные/семью слова одним заходом (наша сеть как фишка)."""
+    q = update.callback_query
+    await q.answer()
+    try:
+        wid = int(q.data.split(":")[1])
+    except (ValueError, IndexError):
+        return
+    uid = _learner(update)
+    wd = db.branch_words(wid, uid, n=5)
+    if not wd:
+        await q.message.reply_text("У этого слова пока нет ветки в базе.")
+        return
+    head = db.get_word(wid)
+    await q.message.reply_text(f"🌳 Ветка слова «{head['word']}» — {len(wd)} родственных:")
+    await _deliver_lesson(q.message, ctx, uid, wd)
 
 # ---------- контроль доступа (allowlist) ----------
 async def _guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -681,6 +716,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_review, pattern=r"^rev:"))
     app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
     app.add_handler(CallbackQueryHandler(on_deep, pattern=r"^deep:"))
+    app.add_handler(CallbackQueryHandler(on_branch, pattern=r"^branch:"))
     app.add_handler(CallbackQueryHandler(on_pace, pattern=r"^pace:"))
     app.add_handler(CallbackQueryHandler(on_topics, pattern=r"^topics$"))
     app.add_handler(CallbackQueryHandler(on_topax, pattern=r"^topax:"))

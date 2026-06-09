@@ -364,6 +364,22 @@ def deep_view(word_id):
         lines.append("🧠 фрейм: " + w["thinking_frame"] + (f" — {fi['ru']}" if fi and fi.get("ru") else ""))
     return "\n".join(lines)
 
+def branch_words(word_id, user_id=DEFAULT_USER, n=5):
+    """«Ветка» слова: однокоренные + члены семьи, что есть отдельными словами в базе (без самого слова)."""
+    w = get_word(word_id)
+    if not w:
+        return []
+    out = {}
+    if w["root"] and w["root"] != "—":
+        for x in words_by_root(w["root"]):
+            if x["word_id"] != word_id:
+                out[x["word_id"]] = x
+    for fam in (w["family"] or []):
+        wid = find_word_id(fam)
+        if wid and wid != word_id and wid not in out:
+            out[wid] = get_word(wid)
+    return list(out.values())[:n]
+
 # ---------- темы: навигация по DNA-идеям и сценариям ----------
 def idea_list():
     with _conn() as c:
