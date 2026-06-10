@@ -5,14 +5,6 @@ import bot, db
 from conftest import UID
 
 
-# ---------- постоянная клавиатура (не прячется после нажатия) ----------
-
-def test_main_kb_persistent_not_one_time():
-    kb = bot.MAIN_KB.to_dict()
-    assert kb.get("is_persistent") is True
-    assert not kb.get("one_time_keyboard")          # кнопки видны всегда
-
-
 # ---------- db: список слов в работе ----------
 
 def test_my_words_lists_learning(fresh_db):

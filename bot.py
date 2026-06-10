@@ -363,8 +363,8 @@ BTN_END = "🏁 Итог"
 MAIN_KB = ReplyKeyboardMarkup(
     # учиться / выбирать и смотреть / завершить (Итог — во всю ширину, главное действие)
     [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_TOPICS, BTN_PROG], [BTN_END]],
-    resize_keyboard=True, is_persistent=True,       # ВИДНА ВСЕГДА (one_time прятал — терялись кнопки)
-    input_field_placeholder="Пиши по-английски или жми кнопки 👇")
+    resize_keyboard=True, one_time_keyboard=True,   # сворачивается в значок ⌨ (is_persistent
+    input_field_placeholder="Кнопки — значок ⌨ справа")  # застревал открытым поверх меню команд)
 MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_TOPICS, BTN_PROG}  # BTN_END — в END_WORDS
 
 async def _route_button(update, ctx, uid, label):
