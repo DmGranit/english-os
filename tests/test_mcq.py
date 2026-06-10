@@ -66,7 +66,7 @@ class _Q:
 def _run_mcq(fresh_db, monkeypatch, pick_wid, queue=None, boxes=None):
     rec = {}
     monkeypatch.setattr(db, "review",
-                        lambda wid, ok, uid, variant=None, ms=None:
+                        lambda wid, ok, uid, variant=None, ms=None, card_type=None:
                         rec.update(wid=wid, ok=ok) or
                         {"word_id": wid, "box": 2, "status": "learning", "next_review": ""})
     monkeypatch.setattr(db, "adapt_band", lambda uid: None)

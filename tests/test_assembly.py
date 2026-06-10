@@ -4,7 +4,7 @@ import asyncio, types
 import bot, db
 from conftest import UID
 
-EXAMPLE_TOKENS = ["We", "need", "to", "meet", "the", "deadline"]
+EXAMPLE_TOKENS = ["we", "need", "to", "meet", "the", "deadline"]   # первое слово нормализовано
 
 
 # ---------- пригодность примера ----------
@@ -83,7 +83,7 @@ def test_assembly_full_flow_records_objective_result(fresh_db, monkeypatch):
     monkeypatch.setattr(db, "backup", lambda: None)
     recorded = {}
     monkeypatch.setattr(db, "review",
-                        lambda wid, ok, uid, variant=None, ms=None:
+                        lambda wid, ok, uid, variant=None, ms=None, card_type=None:
                         recorded.update(wid=wid, ok=ok) or
                         {"word_id": wid, "box": 5, "status": "known", "next_review": ""})
     monkeypatch.setattr(db, "adapt_band", lambda uid: None)
@@ -98,7 +98,7 @@ def test_assembly_full_flow_records_objective_result(fresh_db, monkeypatch):
         q = _tap(ctx, order.index(token), recorded)
     assert recorded == {"wid": 2, "ok": True}          # собрал без ошибок -> объективный зачёт
     assert q.edits and "✅" in q.edits[-1][0]           # экран результата
-    assert "We need to meet the deadline" in q.edits[-1][0]
+    assert "We need to meet the deadline" in q.edits[-1][0]   # в показе заглавная восстановлена
 
     _tap(ctx, "next", recorded)                        # «Дальше» -> колода закончилась
     # финал колоды редактирует сообщение и шлёт носитель — достаточно, что не упало
@@ -108,7 +108,7 @@ def test_assembly_wrong_tap_counts_error(fresh_db, monkeypatch):
     monkeypatch.setattr(bot.random, "sample", lambda seq, k: list(reversed(seq)))
     recorded = {}
     monkeypatch.setattr(db, "review",
-                        lambda wid, ok, uid, variant=None, ms=None:
+                        lambda wid, ok, uid, variant=None, ms=None, card_type=None:
                         recorded.update(ok=ok) or
                         {"word_id": wid, "box": 1, "status": "forgot", "next_review": ""})
     monkeypatch.setattr(db, "adapt_band", lambda uid: None)

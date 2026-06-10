@@ -65,7 +65,7 @@ async def _noop(*a, **k):
 def _run_typed(fresh_db, monkeypatch, answer, queue=None, boxes=None):
     recorded = {}
     monkeypatch.setattr(db, "review",
-                        lambda wid, ok, uid, variant=None, ms=None:
+                        lambda wid, ok, uid, variant=None, ms=None, card_type=None:
                         recorded.update(wid=wid, ok=ok) or
                         {"word_id": wid, "box": 4, "status": "learning", "next_review": ""})
     monkeypatch.setattr(db, "adapt_band", lambda uid: None)

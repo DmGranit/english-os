@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS pending (
 );
 CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-    word_id INTEGER NOT NULL, ts TEXT NOT NULL, remembered INTEGER NOT NULL
+    word_id INTEGER NOT NULL, ts TEXT NOT NULL, remembered INTEGER NOT NULL,
+    variant TEXT, ms INTEGER, direction TEXT, card_type TEXT
 );
 -- структурные ошибки речи (движок фреймов): категория универсальна, без привязки к L1
 CREATE TABLE IF NOT EXISTS errors (
@@ -133,6 +134,8 @@ def _migrate(c):
         c.execute("ALTER TABLE reviews ADD COLUMN ms INTEGER")
     if "direction" not in cols:               # направление карточки: recog (EN→RU) | prod (RU→EN)
         c.execute("ALTER TABLE reviews ADD COLUMN direction TEXT")
+    if "card_type" not in cols:               # тип карточки: mcq|cloze|typed|assembly|self
+        c.execute("ALTER TABLE reviews ADD COLUMN card_type TEXT")  # для честного A/B (несравнимы)
     ucols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
     if ucols and "reminder_hour" not in ucols:
         c.execute("ALTER TABLE users ADD COLUMN reminder_hour INTEGER")
@@ -568,20 +571,29 @@ def mcq_options(word_id, k=4):
     if not w:
         return []
     with _conn() as c:
+        # дистрактор с ТЕМ ЖЕ переводом, что у ответа, — недопустим (в базе есть дубли ru:
+        # «оценивать» ×3); иначе ученик видит две одинаковые кнопки и проигрывает честно
         near = c.execute("""SELECT word_id, word, ru FROM content
-                            WHERE word_id<>? AND ru IS NOT NULL AND ru<>''
+                            WHERE word_id<>? AND ru IS NOT NULL AND ru<>'' AND ru<>?
                               AND (dna_idea=? OR level=?)
                             ORDER BY RANDOM() LIMIT ?""",
-                         (word_id, w["dna_idea"], w["level"], k - 1)).fetchall()
-        picked = [dict(r) for r in near]
-        if len(picked) < k - 1:                  # близких мало — добираем любыми
+                         (word_id, w["ru"], w["dna_idea"], w["level"], k - 1)).fetchall()
+        picked, seen_ru = [], {w["ru"]}
+        for r in near:                           # на всякий — дедуп по ru и внутри дистракторов
+            if r["ru"] not in seen_ru:
+                picked.append(dict(r)); seen_ru.add(r["ru"])
+        if len(picked) < k - 1:                  # близких мало — добираем любыми (тоже без дублей ru)
             have = {r["word_id"] for r in picked} | {word_id}
             qm = ",".join("?" * len(have))
+            qru = ",".join("?" * len(seen_ru))
             more = c.execute(f"""SELECT word_id, word, ru FROM content
-                                 WHERE word_id NOT IN ({qm}) AND ru IS NOT NULL AND ru<>''
+                                 WHERE word_id NOT IN ({qm}) AND ru NOT IN ({qru})
+                                   AND ru IS NOT NULL AND ru<>''
                                  ORDER BY RANDOM() LIMIT ?""",
-                             (*have, k - 1 - len(picked))).fetchall()
-            picked += [dict(r) for r in more]
+                             (*have, *seen_ru, k - 1 - len(picked))).fetchall()
+            for r in more:
+                if r["ru"] not in seen_ru:
+                    picked.append(dict(r)); seen_ru.add(r["ru"])
     return picked + [{"word_id": word_id, "word": w["word"], "ru": w["ru"]}]
 
 def deep_view(word_id):
@@ -833,9 +845,10 @@ def due_today(user_id=DEFAULT_USER, limit=None):
     st = {r["word_id"]: {"status": r["s_status"], "box": r["s_box"]} for r in rows}
     return words, st
 
-def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None):
+def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None, card_type=None):
     """Обновить SRS после повторения. remembered: True/False.
-    variant ('layered'/'flat') и ms (время ответа) — инструментовка для будущего A/B."""
+    variant ('layered'/'flat'), ms (время ответа), card_type (mcq/cloze/typed/assembly/self)
+    — инструментовка для честного A/B (форматы несравнимы по ms и по типу усилия)."""
     today = _today()
     with _conn() as c:
         r = c.execute("SELECT box,status FROM state WHERE user_id=? AND word_id=?",
@@ -857,10 +870,11 @@ def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None):
         c.execute("""UPDATE state SET box=?, status=?, last_review=?, next_review=?
                      WHERE user_id=? AND word_id=?""",
                   (box, status, today, nxt, user_id, word_id))
-        c.execute("""INSERT INTO reviews (user_id, word_id, ts, remembered, variant, ms, direction)
-                     VALUES (?,?,?,?,?,?,?)""",
+        c.execute("""INSERT INTO reviews
+                     (user_id, word_id, ts, remembered, variant, ms, direction, card_type)
+                     VALUES (?,?,?,?,?,?,?,?)""",
                   (user_id, word_id, datetime.datetime.now().isoformat(),
-                   int(remembered), variant, ms, direction))
+                   int(remembered), variant, ms, direction, card_type))
     return {"word_id": word_id, "box": box, "status": status, "next_review": nxt}
 
 def variant_stats(user_id=DEFAULT_USER):

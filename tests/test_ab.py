@@ -34,7 +34,7 @@ def test_recall_ms_measured_until_reveal(fresh_db, monkeypatch):
     fresh_db.ensure_user_state(UID)
     recorded = {}
     monkeypatch.setattr(db, "review",
-                        lambda wid, ok, uid, variant=None, ms=None:
+                        lambda wid, ok, uid, variant=None, ms=None, card_type=None:
                         recorded.update(wid=wid, ms=ms) or
                         {"word_id": wid, "box": 2, "status": "learning", "next_review": ""})
     monkeypatch.setattr(db, "adapt_band", lambda uid: None)

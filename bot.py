@@ -231,6 +231,7 @@ async def _finish_session(ud, uid, send):
     ud["mode"] = "flow"                            # роль снята: следующий текст — просто разговор
     ud.pop("scn_words", None)                      # целевые слова сессии больше не грунтуются
     ud.pop("typed_wid", None)                      # незакрытая typed-карточка снята
+    ud.pop("ctx_checked", None)                    # следующая сессия снова ловит цель ученика
     for p in _chunks(reply):                       # отчёт может не влезть в одно сообщение
         try:
             await send(_to_html(p), parse_mode="HTML")
@@ -519,6 +520,7 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
     ctx.user_data["mode"] = mode
     ctx.user_data["history"] = []
     ctx.user_data.pop("awaiting_slot_hours", None)   # ушёл учиться — настройку часов отменяем
+    ctx.user_data.pop("ctx_checked", None)           # новая сессия — снова можно поймать цель
     db.ensure_user_state(uid)            # новый ученик / новые слова получают state
 
     if mode == "new":
@@ -1025,7 +1027,7 @@ async def _handle_typed_answer(update, ctx, uid, text):
     ok = exact or near
     shown = ctx.user_data.get("card_shown_at")
     ms = int((time.time() - shown) * 1000) if shown else None
-    await _record_review(ctx, uid, wid, ok, ms)
+    await _record_review(ctx, uid, wid, ok, ms, card_type="typed")
     if exact:
         head = f"✅ Точно! {word['word']} — {word['ru']}"
     elif near:
@@ -1043,9 +1045,15 @@ async def _handle_typed_answer(update, ctx, uid, text):
 ASM_MIN, ASM_MAX = 4, 10    # пригодная длина примера в словах
 
 def _asm_tokens(example):
-    """Кусочки для конструктора. None — пример отсутствует или неудобной длины."""
-    toks = (example or "").split()
-    return toks if ASM_MIN <= len(toks) <= ASM_MAX else None
+    """Кусочки для конструктора. None — пример отсутствует или неудобной длины.
+    Регистр нормализуем: заглавная первого слова и точка в конце «палят» порядок —
+    половина задачи решалась бы без знания SVOMPT."""
+    toks = (example or "").rstrip(".!?").split()
+    if not (ASM_MIN <= len(toks) <= ASM_MAX):
+        return None
+    if toks and toks[0][:1].isupper() and toks[0].lower() != "i":
+        toks[0] = toks[0][0].lower() + toks[0][1:]   # снять заглавную-подсказку начала
+    return toks
 
 def _asm_kb(order, used):
     btns = [InlineKeyboardButton(t, callback_data=f"asm:{i}")
@@ -1060,10 +1068,12 @@ def _asm_question(word, pos, total, picked):
 
 def _cloze_for(word):
     """Коллокация с пропуском целевого слова — для cloze-карточки box 2.
-    None — у слова нет коллокации, содержащей его само (фолбэк в узнавание)."""
+    Слово ищется ЦЕЛИКОМ (\\b): «investor» не матчит «investors», «please» не матчит
+    «pleased» — иначе ученик видит огрызок «attract ___s». None — нет чистого вхождения."""
+    pat = re.compile(r"\b" + re.escape(word["word"]) + r"\b", re.I)
     for c in word.get("collocations") or []:
-        if re.search(re.escape(word["word"]), c, re.I):
-            return re.sub(re.escape(word["word"]), "___", c, flags=re.I)
+        if pat.search(c):
+            return pat.sub("___", c)
     return None
 
 def _review_card_text(word, pos, total, reveal, productive, variant="layered", box=1):
@@ -1179,13 +1189,19 @@ async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     word_id = queue[pos]
     remembered = (action == "ok")
     ms = ctx.user_data.pop("card_ms", None)
-    await _record_review(ctx, uid, word_id, remembered, ms)
+    box = ctx.user_data.get("review_box", {}).get(word_id, 1)
+    ctype = "cloze" if (box == 2 and not productive_box(box)) else "self"
+    await _record_review(ctx, uid, word_id, remembered, ms, card_type=ctype)
     await _next_card(q, ctx, uid)
 
-async def _record_review(ctx, uid, word_id, remembered, ms):
+def productive_box(box):
+    return box >= db.PRODUCTIVE_FROM_BOX
+
+async def _record_review(ctx, uid, word_id, remembered, ms, card_type="self"):
     """Записать результат карточки (SRS + A/B + полоса + счётчики сессии)."""
     ctx.user_data.pop("typed_wid", None)        # «Не помню» и любой исход снимают ожидание
-    db.review(word_id, remembered, uid, variant=_variant(uid, word_id), ms=ms)
+    db.review(word_id, remembered, uid, variant=_variant(uid, word_id), ms=ms,
+              card_type=card_type)
     db.adapt_band(uid)                          # тихо подстраиваем полосу
     key = "review_ok" if remembered else "review_fail"
     ctx.user_data[key] = ctx.user_data.get(key, 0) + 1
@@ -1212,7 +1228,7 @@ async def on_mcq(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ok = picked == target
     shown = ctx.user_data.get("card_shown_at")
     ms = int((time.time() - shown) * 1000) if shown else None
-    await _record_review(ctx, uid, target, ok, ms)
+    await _record_review(ctx, uid, target, ok, ms, card_type="mcq")
     head = (f"✅ Верно! {word['word']} — {word['ru']}" if ok
             else f"❌ «{word['word']}» — {word['ru']}, а не «{db.get_word(picked)['ru']}»")
     ex = f"\n{word['example']}" if word.get("example") else ""
@@ -1256,10 +1272,11 @@ async def on_assembly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ok = ud.get("asm_errors", 0) == 0
     shown = ud.get("card_shown_at")
     ms = int((time.time() - shown) * 1000) if shown else None
-    await _record_review(ctx, uid, ud["asm_wid"], ok, ms)
+    await _record_review(ctx, uid, ud["asm_wid"], ok, ms, card_type="assembly")
     verdict = "✅ Собрано без ошибок!" if ok else f"⚠️ Собрано, но ошибок: {ud['asm_errors']}"
     block = ("\n" + _network_block(word)) if _variant(uid, ud["asm_wid"]) == "layered" else ""
     sentence = " ".join(target)
+    sentence = sentence[:1].upper() + sentence[1:]   # вернуть заглавную в показе (в задаче снята)
     for k in ("asm_target", "asm_order", "asm_used", "asm_picked", "asm_errors", "asm_wid"):
         ud.pop(k, None)
     await q.edit_message_text(
