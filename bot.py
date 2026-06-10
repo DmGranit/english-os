@@ -204,6 +204,23 @@ def _extract_summary(text):
 
 # ---------- завершение сессии (общая точка: «Закончили», кнопка «🏁 Итог», авто-ИТОГ) ----------
 END_WORDS = {"закончили", "отчёт", "отчет", "стоп", "итог", "🏁 итог"}
+# фразы-завершения: совпадают с ВСЕЙ репликой целиком (с возможным «!»/«.»),
+# а не с её началом — иначе «stop the train please» ложно сработает
+_END_PHRASES = re.compile(
+    r"(итог|стоп( игра)?|закончил[аи]?|закончим|закончить|отч[её]т|хватит|финиш|"
+    r"all done|we'?re done|that'?s all|that'?s it|the end|"
+    r"let'?s (finish|stop)( for today| up| now)?|"
+    r"finish for today|finish up|finish|i'?m done|done for today|done|stop)"
+    r"[\s.!]*$", re.I)
+_END_PHRASES = re.compile(r"^\s*" + _END_PHRASES.pattern, re.I)
+
+def _is_end_trigger(text):
+    """Реплика завершает сессию? Точные слова ИЛИ короткая фраза-завершение ЦЕЛИКОМ
+    (не длинное предложение, где finish/stop — обычные слова)."""
+    t = (text or "").strip().lower()
+    if t in END_WORDS:
+        return True
+    return bool(_END_PHRASES.match(t)) and len(t.split()) <= 4
 IDLE_SUMMARY_SEC = 25 * 60   # тишина, после которой сессия сводится автоматически
 
 END_PROMPT = ("<КОНЕЦ СЕССИИ> Заверши занятие: дай человеческий отчёт ИТОГ, а в самом конце — "
@@ -633,8 +650,8 @@ async def _process_user_text(update, ctx, uid, text):
         await update.message.reply_text(confirm)
         return
 
-    # завершение сессии: слово-триггер или кнопка «🏁 Итог»
-    if text.strip().lower() in END_WORDS:
+    # завершение сессии: слово-триггер, естественная фраза или кнопка «🏁 Итог»
+    if _is_end_trigger(text):
         await _typing(update.message)
         await _finish_session(ctx.user_data, uid, update.message.reply_text)
         return
@@ -803,7 +820,9 @@ def _scenario_kb():
 async def _begin_scenario(msg, ctx, uid, scenario):
     """Старт сценарий-сессии: слова сценария под полосу (в SRS) → i+1-образец →
     бот в роли, грунтованный целевыми словами. Полоса скрыта, ИТОГ закрывает как обычно."""
-    ph = await msg.reply_text("⏳ Готовлю сценарий…", reply_markup=ReplyKeyboardRemove())
+    ph = await msg.reply_text(
+        "⏳ Готовлю сценарий…\n(чтобы закончить и разобрать ошибки — напиши «Итог»)",
+        reply_markup=ReplyKeyboardRemove())
     db.ensure_user_state(uid)
     wd = db.theme_words("scn", scenario, uid, n=4, band=db.get_band(uid))
     ids = [w["word_id"] for w in wd]

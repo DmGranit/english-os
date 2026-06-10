@@ -7,6 +7,14 @@ from conftest import UID
 LAST = '{"reviewed": [{"word": "invest", "ok": true}], "add": [], "errors": []}'
 
 
+def test_end_triggers_recognize_natural_phrases():
+    for t in ["Итог", "стоп", "закончили", "finish", "Let's finish for today",
+              "that's all", "we're done", "the end", "стоп игра"]:
+        assert bot._is_end_trigger(t), t
+    for t in ["I want to finish the project", "stop the train please", "let's talk"]:
+        assert not bot._is_end_trigger(t), t   # «finish/stop» в осмысленной фразе — не команда
+
+
 def test_extract_summary_single_block():
     text = f"Отчёт сессии.\n```json\n{LAST}\n```"
     data, clean = bot._extract_summary(text)
