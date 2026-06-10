@@ -922,9 +922,34 @@ async def on_branch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(f"🌳 Ветка слова «{head['word']}» — {len(wd)} родственных:")
     await _deliver_lesson(q.message, ctx, uid, wd)
 
-# ---------- контроль доступа (allowlist) ----------
+# ---------- контроль доступа: заявки + роли (env ALLOWED_USERS — аварийный замок поверх) ----------
+def _access_decision(uid):
+    """allowed | pending_new (первая заявка, создана) | pending | blocked."""
+    if (OWNER_ID and uid == OWNER_ID) or uid in ALLOWED_USERS:
+        return "allowed"
+    role = db.get_role(uid)
+    if role in ("owner", "approved"):
+        return "allowed"
+    if role == "blocked":
+        return "blocked"
+    if role == "pending":
+        return "pending"
+    return "pending_new"        # незнакомец — заявка создаётся в _guard (нужно имя)
+
+def _knock_kb(uid):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Впустить", callback_data=f"acc:ok:{uid}"),
+        InlineKeyboardButton("🚫 Отклонить", callback_data=f"acc:no:{uid}"),
+    ]])
+
+def _user_label(u):
+    """Имя (@username, id) для карточки заявки и /users."""
+    name = " ".join(filter(None, [u.first_name, u.last_name])) or "Без имени"
+    return f"{name} (@{u.username}, id {u.id})" if u.username else f"{name} (id {u.id})"
+
 async def _guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Пускаем только разрешённые Telegram-id (если ALLOWED_USERS задан). Иначе — стоп."""
+    """Вахтёр: пускает владельца/одобренных; незнакомцу — заявка, владельцу — уведомление.
+    Всё ДО любых вызовов LLM."""
     u = update.effective_user
     if update.callback_query:
         log.info("update: user=%s callback=%s", u.id if u else "?", update.callback_query.data)
@@ -932,14 +957,79 @@ async def _guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kind = "voice" if update.message.voice else "text"
         log.info("update: user=%s %s=%r", u.id if u else "?", kind,
                  (update.message.text or "")[:80])
-    if ALLOWED_USERS and (u is None or u.id not in ALLOWED_USERS):
-        if update.callback_query:
-            await update.callback_query.answer("⛔ Доступ закрыт", show_alert=True)
-        elif update.message:
-            await update.message.reply_text("⛔ Этот бот персональный. Доступ закрыт.")
+    if u is None:
         raise ApplicationHandlerStop
-    if u is not None:
+    decision = _access_decision(u.id)
+    if decision == "allowed":
         ctx.user_data["last_seen"] = time.time()   # пульс активности — для авто-ИТОГа
+        return
+    if decision == "pending_new" and db.request_access(u.id, _user_label(u)):
+        if OWNER_ID:                               # карточка владельцу — один раз на заявку
+            try:
+                await ctx.bot.send_message(
+                    OWNER_ID, f"🔔 Стучится {_user_label(u)} — впустить?",
+                    reply_markup=_knock_kb(u.id))
+            except Exception:
+                log.exception("knock notify failed")
+        decision = "pending"
+        reply = "Это ранний доступ English OS 🔑 Заявка отправлена — напишу, как только откроют."
+    elif decision == "pending":
+        reply = "Заявка уже у владельца — ждём решения 🙌"
+    else:
+        reply = "⛔ Доступ закрыт."
+    if update.callback_query:
+        await update.callback_query.answer(reply, show_alert=True)
+    elif update.message:
+        await update.message.reply_text(reply)
+    raise ApplicationHandlerStop
+
+# ---------- решения по заявкам и список пользователей (владелец) ----------
+async def on_access(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if OWNER_ID and _learner(update) != OWNER_ID:
+        return
+    _, action, uid = q.data.split(":")
+    uid = int(uid)
+    if action == "ok":
+        db.set_role(uid, "approved")
+        try:
+            await ctx.bot.send_message(
+                uid, "Доступ открыт — добро пожаловать в English OS! 🎉 Жми /start.")
+        except Exception:
+            pass
+        await q.edit_message_text(f"✅ Впущен: id {uid}. Список: /users")
+    else:
+        db.set_role(uid, "blocked")
+        await q.edit_message_text(f"🚫 Отклонён: id {uid}. Список: /users")
+
+_ROLE_MARK = {"owner": "👑", "approved": "✅", "pending": "🔔", "blocked": "🚫"}
+
+async def users_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/users — кто есть в боте: роль, имя, прогресс; кнопки решений по заявкам."""
+    if OWNER_ID and _learner(update) != OWNER_ID:
+        await update.message.reply_text("Список пользователей — только у администратора.")
+        return
+    rows = db.list_users()
+    if not rows:
+        await update.message.reply_text("Пока никого нет.")
+        return
+    lines = ["👥 Пользователи:\n"]
+    pending = []
+    for r in rows:
+        mark = _ROLE_MARK.get(r["role"], "·")
+        lines.append(f"{mark} {r['name'] or r['user_id']} — с {r['created_at']}, "
+                     f"освоено {r['mastered']}")
+        if r["role"] == "pending":
+            pending.append(r)
+    msg = "\n".join(lines)
+    if pending:                                   # решения по первой заявке прямо отсюда
+        p = pending[0]
+        await update.message.reply_text(
+            msg + f"\n\n🔔 Ждёт решения: {p['name'] or p['user_id']}",
+            reply_markup=_knock_kb(p["user_id"]))
+    else:
+        await update.message.reply_text(msg)
 
 # ---------- /add: добавить встреченные слова в очередь на изучение ----------
 async def add_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1136,7 +1226,8 @@ async def _post_init(app):
     if OWNER_ID:                                                 # владельцу — плюс админское
         await app.bot.set_my_commands(
             learner + [BotCommand("pending", "очередь новых слов (админ)"),
-                       BotCommand("fill", "наполнить сценарий словами (админ)")],
+                       BotCommand("fill", "наполнить сценарий словами (админ)"),
+                       BotCommand("users", "пользователи и заявки (админ)")],
             scope=BotCommandScopeChat(chat_id=OWNER_ID))
     global _REMINDER_TASK, _IDLE_TASK
     _REMINDER_TASK = asyncio.create_task(_reminder_loop(app))   # ссылка в глобале -> не соберётся GC
@@ -1146,6 +1237,7 @@ def main():
     if not TOKEN:
         raise SystemExit("Задай TELEGRAM_TOKEN")
     db.init_db()    # схема + миграции при каждом старте (идемпотентно) — не руками
+    db.ensure_roles(OWNER_ID, ALLOWED_USERS)   # env-список -> роли (бесшовный переход)
     app = (Application.builder().token(TOKEN)
            .persistence(_persistence())          # сессии переживают рестарт
            .post_init(_post_init).build())
@@ -1154,6 +1246,8 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("pending", pending_cmd))
     app.add_handler(CommandHandler("fill", fill_cmd))
+    app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CallbackQueryHandler(on_access, pattern=r"^acc:"))
     app.add_handler(CommandHandler("mistakes", mistakes_cmd))
     app.add_handler(CommandHandler("read", read_cmd))
     app.add_handler(CommandHandler("add", add_cmd))

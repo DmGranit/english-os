@@ -67,7 +67,9 @@ CREATE TABLE IF NOT EXISTS users (
     program TEXT DEFAULT 'free',          -- free | cycle (программа дня)
     -- часы слотов: МИНУТЫ от полуночи (540 = 9:00); схема v1, см. _migrate
     remind_morning INTEGER DEFAULT 540, remind_day INTEGER DEFAULT 840,
-    remind_evening INTEGER DEFAULT 1140
+    remind_evening INTEGER DEFAULT 1140,
+    role TEXT,                            -- доступ: owner|approved|pending|blocked (NULL = незнакомец)
+    name TEXT                             -- имя/username на момент заявки (для /users)
 );
 -- след завершённых сессий (ИТОГ): нужен для карты дня (слот SCENARIO)
 CREATE TABLE IF NOT EXISTS sessions (
@@ -126,6 +128,9 @@ def _migrate(c):
         c.execute("ALTER TABLE users ADD COLUMN remind_morning INTEGER DEFAULT 540")
         c.execute("ALTER TABLE users ADD COLUMN remind_day INTEGER DEFAULT 840")
         c.execute("ALTER TABLE users ADD COLUMN remind_evening INTEGER DEFAULT 1140")
+    if ucols and "role" not in ucols:         # доступ-по-заявке: роль и имя для /users
+        c.execute("ALTER TABLE users ADD COLUMN role TEXT")
+        c.execute("ALTER TABLE users ADD COLUMN name TEXT")
     if c.execute("PRAGMA user_version").fetchone()[0] < 1:
         # v1: слоты перешли с часов на минуты от полуночи. Пересборка users нужна целиком:
         # и данные (часы -> минуты), и ДЕФОЛТЫ колонок — ALTER-дефолты прошлой версии (9/14/19)
@@ -137,7 +142,7 @@ def _migrate(c):
             onboarded INTEGER NOT NULL DEFAULT 0, reminder_hour INTEGER, created_at TEXT,
             program TEXT DEFAULT 'free',
             remind_morning INTEGER DEFAULT 540, remind_day INTEGER DEFAULT 840,
-            remind_evening INTEGER DEFAULT 1140)""")
+            remind_evening INTEGER DEFAULT 1140, role TEXT, name TEXT)""")
         c.execute("""INSERT INTO users
             SELECT user_id, level, goal, onboarded, reminder_hour, created_at, program,
               CASE WHEN remind_morning IS NOT NULL AND remind_morning < 24
@@ -145,7 +150,8 @@ def _migrate(c):
               CASE WHEN remind_day IS NOT NULL AND remind_day < 24
                    THEN remind_day*60 ELSE remind_day END,
               CASE WHEN remind_evening IS NOT NULL AND remind_evening < 24
-                   THEN remind_evening*60 ELSE remind_evening END
+                   THEN remind_evening*60 ELSE remind_evening END,
+              role, name
             FROM users_v0""")
         c.execute("DROP TABLE users_v0")
         c.execute("PRAGMA user_version = 1")
@@ -258,6 +264,49 @@ def reminder_users(hour):
         return [r["user_id"] for r in c.execute(
             """SELECT user_id FROM users WHERE reminder_hour=?
                AND (program IS NULL OR program<>'cycle')""", (hour,)).fetchall()]
+
+# ---------- доступ-по-заявке (роли) ----------
+
+def get_role(user_id):
+    with _conn() as c:
+        r = c.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return r["role"] if r else None
+
+def set_role(user_id, role):
+    with _conn() as c:
+        c.execute("""INSERT INTO users (user_id, role, created_at) VALUES (?,?,?)
+                     ON CONFLICT(user_id) DO UPDATE SET role=excluded.role""",
+                  (user_id, role, _today()))
+
+def request_access(user_id, name):
+    """Заявка незнакомца. True — только при ПЕРВОМ обращении (одно уведомление владельцу
+    на заявку); повторные сообщения стучащегося возвращают False."""
+    with _conn() as c:
+        r = c.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if r and r["role"]:                    # роль уже есть (pending/blocked/…) — не повторяем
+            return False
+        c.execute("""INSERT INTO users (user_id, role, name, created_at) VALUES (?,?,?,?)
+                     ON CONFLICT(user_id) DO UPDATE SET role='pending', name=excluded.name""",
+                  (user_id, "pending", name, _today()))
+    return True
+
+def ensure_roles(owner_id, allowed_ids):
+    """Бутстрап при старте: владелец -> owner, env-список -> approved.
+    Только для строк БЕЗ роли — ручные решения (blocked и т.п.) не затираются."""
+    for uid in allowed_ids or ():
+        if uid != owner_id and get_role(uid) is None:
+            set_role(uid, "approved")
+    if owner_id and get_role(owner_id) != "owner":
+        set_role(owner_id, "owner")
+
+def list_users():
+    """Все известные пользователи: роль, имя, дата, освоено слов (для /users)."""
+    with _conn() as c:
+        rows = c.execute("""SELECT u.user_id, u.role, u.name, u.created_at,
+                              (SELECT COUNT(*) FROM state s
+                               WHERE s.user_id=u.user_id AND (s.status='known' OR s.box>=3)) mastered
+                            FROM users u ORDER BY u.created_at, u.user_id""").fetchall()
+    return [dict(r) for r in rows]
 
 # ---------- программа дня (free | cycle) ----------
 
