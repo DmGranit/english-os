@@ -539,10 +539,13 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         await _ask(out, ctx, mode, seed, uid, markup=_deep_kb(words), tmsg=tmsg)
 
     elif mode == "review":
-        due, st = db.due_today(uid)
+        due, st = db.due_today(uid, limit=db.DECK_CAP)   # кап колоды: не марафон на 90 карт
         if not due:
             await out("На сегодня повторять нечего ✅")
             return
+        total = db.due_count(uid)
+        if total > len(due):                             # остальное — мягко, без вины
+            ctx.user_data["deck_more"] = total - len(due)
         ctx.user_data["review_queue"] = [w["word_id"] for w in due]  # очередь слов
         ctx.user_data["review_box"]   = {wid: st[wid]["box"] for wid in st}  # box -> направление
         ctx.user_data["review_pos"]   = 0      # на какой карточке стоим
@@ -1141,10 +1144,13 @@ async def _finish_review(q, ctx, uid):
     ok   = ctx.user_data.get("review_ok", 0)
     fail = ctx.user_data.get("review_fail", 0)
     db.backup()
+    more = ctx.user_data.pop("deck_more", 0)
+    tail = (f"\n\n📚 Ещё {more} слов(а) ждут — но это на потом, без спешки. "
+            f"Лучше короткими подходами!") if more else ""
     await q.edit_message_text(
         f"🔁 Повторение завершено!\n\n"
         f"Карточек: {ok + fail}\n✅ Вспомнил: {ok}\n❌ Забыл: {fail}\n\n"
-        f"Прогресс сохранён."
+        f"Прогресс сохранён.{tail}"
     )
     # носитель клавиатуры (reply-клавиатуру нельзя приложить к edit — только новым сообщением)
     await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)

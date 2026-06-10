@@ -14,6 +14,9 @@ from contextlib import contextmanager
 DB_PATH = os.environ.get("ENGLISH_OS_DB", "english_os.db")
 DEFAULT_USER = 1                      # пока один пользователь; user_id заложен на вырост
 DAILY_NEW_CAP = int(os.environ.get("NEW_CAP", "7"))   # дневная норма новых слов (настраивается NEW_CAP)
+DIRECT_BUDGET_MULT = 2   # прямой ввод (темы/ветка/«учим X»/сценарий) — до cap×2/день
+                         # (раньше шёл мимо капа -> лавина повторений; единый бюджет её гасит)
+DECK_CAP = int(os.environ.get("DECK_CAP", "20"))      # макс. карточек за одну колоду повторения
 INTERVALS = {1: 1, 2: 3, 3: 7, 4: 14, 5: 30}   # Лейтнер, как в исходном файле
 MAINTENANCE_DAYS = 90     # known-слова возвращаются на «проверку выживания» (канон Ч.1:
                           # без извлечения след угасает; can-do-прокси не должен врать)
@@ -762,8 +765,10 @@ def promoted_today(user_id=DEFAULT_USER):
                          (user_id, _today())).fetchone()[0]
 
 def promote_new(user_id=DEFAULT_USER, n=DAILY_NEW_CAP):
-    """Ввести в оборot до n самых ценных new-слов, но не больше дневного лимита."""
-    remaining = max(0, DAILY_NEW_CAP - promoted_today(user_id))
+    """Ввести в оборот до n самых ценных new-слов (кнопка 🌅), но не больше дневного
+    лимита И не больше остатка единого бюджета ввода (прямой ввод его уже мог потратить)."""
+    remaining = min(max(0, DAILY_NEW_CAP - promoted_today(user_id)),
+                    intake_budget_left(user_id))
     n = min(n, remaining)
     if n <= 0:
         return []
@@ -777,27 +782,52 @@ def promote_new(user_id=DEFAULT_USER, n=DAILY_NEW_CAP):
                       (today, today, today, user_id, w["word_id"]))
     return pool
 
+def intake_budget_left(user_id=DEFAULT_USER):
+    """Сколько слов ещё можно ввести сегодня прямым путём (темы/ветка/«учим»/сценарий).
+    Единый дневной бюджет cap×MULT — защита от лавины (раньше эти пути шли мимо капа)."""
+    return max(0, DAILY_NEW_CAP * DIRECT_BUDGET_MULT - promoted_today(user_id))
+
 def start_learning(ids, user_id=DEFAULT_USER):
-    """Ввести конкретные слова в оборот по явной просьбе «учим X» (минуя дневной лимит)."""
+    """Ввести конкретные слова в оборот («учим X», темы, ветка, сценарий) В ПРЕДЕЛАХ
+    дневного бюджета. Возвращает список реально введённых word_id."""
+    budget = intake_budget_left(user_id)
+    if budget <= 0:
+        return []
     today = _today()
+    added = []
     with _conn() as c:
         for wid in ids:
-            c.execute("""UPDATE state SET status='learning', box=1,
-                         last_review=?, next_review=?, promoted_at=?
-                         WHERE user_id=? AND word_id=? AND status='new'""",
-                      (today, today, today, user_id, wid))
+            if len(added) >= budget:
+                break
+            cur = c.execute("""UPDATE state SET status='learning', box=1,
+                               last_review=?, next_review=?, promoted_at=?
+                               WHERE user_id=? AND word_id=? AND status='new'""",
+                            (today, today, today, user_id, wid))
+            if cur.rowcount:
+                added.append(wid)
+    return added
 
-def due_today(user_id=DEFAULT_USER):
-    """Слова к повторению: learning/forgot + созревшие known (maintenance) с
-    next_review<=сегодня. Самые просроченные первыми."""
+def due_count(user_id=DEFAULT_USER):
+    """Сколько всего слов к повторению сегодня (без капа) — для «ещё N ждут»."""
     today = _today()
     with _conn() as c:
-        rows = c.execute("""SELECT c.*, s.status AS s_status, s.box AS s_box,
+        return c.execute("""SELECT COUNT(*) FROM state
+                            WHERE user_id=? AND status IN ('learning','forgot','known')
+                              AND next_review IS NOT NULL AND next_review<=?""",
+                         (user_id, today)).fetchone()[0]
+
+def due_today(user_id=DEFAULT_USER, limit=None):
+    """Слова к повторению: learning/forgot + созревшие known (maintenance) с
+    next_review<=сегодня. Самые просроченные первыми. limit — кап колоды (B1)."""
+    today = _today()
+    cap = f"LIMIT {int(limit)}" if limit else ""
+    with _conn() as c:
+        rows = c.execute(f"""SELECT c.*, s.status AS s_status, s.box AS s_box,
                                    s.next_review AS s_next
                             FROM state s JOIN content c USING(word_id)
                             WHERE s.user_id=? AND s.status IN ('learning','forgot','known')
                               AND s.next_review IS NOT NULL AND s.next_review<=?
-                            ORDER BY s.next_review ASC, c.priority DESC""",
+                            ORDER BY s.next_review ASC, c.priority DESC {cap}""",
                          (user_id, today)).fetchall()
     words = [_row_to_word(r) for r in rows]
     st = {r["word_id"]: {"status": r["s_status"], "box": r["s_box"]} for r in rows}
