@@ -557,11 +557,15 @@ def _pending_card_text(item):
     lines.append("\nДобавить в базу?")
     return "\n".join(lines)
 
-def _pending_kb(pending_id):
-    return InlineKeyboardMarkup([[
+def _pending_kb(pending_id, total=1):
+    rows = [[
         InlineKeyboardButton("✅ Добавить", callback_data=f"pend:ok:{pending_id}"),
         InlineKeyboardButton("🗑 Отклонить", callback_data=f"pend:no:{pending_id}"),
-    ]])
+    ]]
+    if total > 1:
+        rows.append([InlineKeyboardButton(f"✅ Подтвердить все ({total})",
+                                          callback_data="pend:all")])
+    return InlineKeyboardMarkup(rows)
 
 async def pending_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/pending — показать первое слово из очереди на подтверждение."""
@@ -573,16 +577,22 @@ async def pending_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Очередь новых слов пуста ✅")
         return
     await update.message.reply_text(_pending_card_text(items[0]),
-                                    reply_markup=_pending_kb(items[0]["id"]))
+                                    reply_markup=_pending_kb(items[0]["id"], len(items)))
 
 async def on_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    _, action, pid = q.data.split(":")           # pend : ok|no : <id>
+    parts = q.data.split(":")                    # pend:ok:<id> | pend:no:<id> | pend:all
+    action = parts[1]
     if OWNER_ID and _learner(update) != OWNER_ID:
         await q.edit_message_text("Добавление слов в базу — только у администратора.")
         return
     uid = CONTENT_USER
+    if action == "all":                          # подтвердить всю очередь разом
+        n = db.confirm_all_pending(uid)
+        await q.edit_message_text(f"✅ Подтверждено разом: {n}. Очередь пуста.")
+        return
+    pid = parts[2]
     if action == "ok":
         msg = "✅ Добавлено в базу." if db.confirm_pending(int(pid), uid) else "⚠️ Уже обработано."
     else:
@@ -590,9 +600,41 @@ async def on_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     items = db.list_pending(uid)                  # показать следующее или конец
     if items:
         await q.edit_message_text(msg + "\n\n" + _pending_card_text(items[0]),
-                                  reply_markup=_pending_kb(items[0]["id"]))
+                                  reply_markup=_pending_kb(items[0]["id"], len(items)))
     else:
         await q.edit_message_text(msg + "\n\nОчередь пуста ✅")
+
+# ---------- /fill: батч-наполнение сценария (админ) ----------
+async def fill_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/fill <сценарий> [N] — подбор N слов из частотных бизнес-списков ->
+    enrich (7 слоёв) -> очередь /pending. Дубли отсеиваются на обоих шагах."""
+    if OWNER_ID and _learner(update) != OWNER_ID:
+        await update.message.reply_text("Наполнение базы — только у администратора.")
+        return
+    args = list(ctx.args or [])
+    n = 10
+    if args and args[-1].isdigit():
+        n = max(1, min(int(args.pop()), 25))
+    scenario = " ".join(args).strip()
+    if not scenario:
+        topics = ", ".join(f"{s} ({k})" for s, k in db.scenario_list(min_n=1))
+        await update.message.reply_text(
+            "Формат: /fill <сценарий> [сколько слов, до 25]\n"
+            "Например: /fill Restaurant 15\n\n"
+            f"Сценарии сейчас: {topics}")
+        return
+    await update.message.reply_text(f"⏳ Подбираю до {n} слов для «{scenario}» по частотным спискам…")
+    words = await asyncio.to_thread(enrich.suggest_words, scenario, n)
+    if not words:
+        await update.message.reply_text(
+            "Не вышло подобрать слова (модель не дала список или всё уже в базе). Попробуй ещё раз.")
+        return
+    await update.message.reply_text(
+        "Кандидаты: " + ", ".join(words) + f"\n⏳ Разбираю по 7 слоям ({len(words)} слов)…")
+    res = await asyncio.to_thread(enrich.run, words, CONTENT_USER, scenario)
+    await update.message.reply_text(
+        f"Готово: в очередь {res['added']}, дубли {res['skipped']}, не вышло {res['failed']}.\n"
+        f"Подтверждение — /pending (есть «Подтвердить все»).")
 
 # ---------- режим чтения: понятный вход i+1 ----------
 async def read_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -803,7 +845,8 @@ async def _post_init(app):
     await app.bot.set_my_commands(learner)                       # по умолчанию — всем
     if OWNER_ID:                                                 # владельцу — плюс админское
         await app.bot.set_my_commands(
-            learner + [BotCommand("pending", "очередь новых слов (админ)")],
+            learner + [BotCommand("pending", "очередь новых слов (админ)"),
+                       BotCommand("fill", "наполнить сценарий словами (админ)")],
             scope=BotCommandScopeChat(chat_id=OWNER_ID))
     global _REMINDER_TASK, _IDLE_TASK
     _REMINDER_TASK = asyncio.create_task(_reminder_loop(app))   # ссылка в глобале -> не соберётся GC
@@ -817,6 +860,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("pending", pending_cmd))
+    app.add_handler(CommandHandler("fill", fill_cmd))
     app.add_handler(CommandHandler("mistakes", mistakes_cmd))
     app.add_handler(CommandHandler("read", read_cmd))
     app.add_handler(CommandHandler("add", add_cmd))

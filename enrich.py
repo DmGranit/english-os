@@ -14,7 +14,39 @@ import db, llm
 
 LEVELS = {"A1", "A2", "B1", "B2", "C1", "C2"}
 REGISTERS = {"formal", "neutral", "informal"}
-_JSON = re.compile(r"\{.*\}", re.DOTALL)   # достаём JSON-объект из ответа модели
+_JSON = re.compile(r"\{.*\}", re.DOTALL)       # достаём JSON-объект из ответа модели
+_JSON_ARR = re.compile(r"\[.*\]", re.DOTALL)   # достаём JSON-массив (suggest_words)
+
+
+def suggest_words(scenario, n=10):
+    """Подобрать до n слов под сценарий из частотных бизнес-списков (NGSL Business,
+    Oxford 3000/5000), которых ещё нет в базе. Дубли и имеющиеся отсеиваются."""
+    with db._conn() as c:
+        existing = [r["word"] for r in c.execute("SELECT word FROM content ORDER BY word")]
+    system = (
+        "Ты — лексикограф делового английского. Подбери частотные, реально полезные "
+        "слова и короткие словосочетания уровня A2–C1 под заданный сценарий, опираясь "
+        "на частотные списки (NGSL Business, Oxford 3000/5000). "
+        "Верни СТРОГО один JSON-массив строк, без пояснений вокруг.\n"
+        "Этих слов НЕ предлагать (уже в базе): " + ", ".join(existing))
+    raw = llm.chat(system, [{"role": "user",
+                             "content": f"Сценарий: {scenario}. Нужно слов: {n}."}])
+    m = _JSON_ARR.search(raw or "")
+    if not m:
+        return []
+    try:
+        arr = json.loads(m.group(0))
+    except Exception:
+        return []
+    out, seen = [], set()
+    for w in arr:
+        w = str(w).strip()
+        if w and w.lower() not in seen and db.find_word_id(w) is None:
+            seen.add(w.lower())
+            out.append(w)
+        if len(out) >= n:
+            break
+    return out
 
 def _allowed():
     """Существующие DNA-идеи, фреймы и сценарии — чтобы ИИ переиспользовал таксономию, а не плодил новую."""
@@ -86,15 +118,19 @@ def validate(payload, word):
         "useful": clamp(payload.get("useful")),
     }
 
-def enrich_word(word, ideas, frames, scenarios):
+def enrich_word(word, ideas, frames, scenarios, scenario_override=None):
     raw = llm.chat(_system_prompt(ideas, frames, scenarios),
                    [{"role": "user", "content": f"Слово: {word}"}])
     payload = validate(_parse(raw), word)
-    if payload and payload.get("scenario") not in scenarios:   # фолбэк, если ИИ дал свой сценарий
-        payload["scenario"] = "Universal"
+    if payload:
+        if scenario_override:                       # батч-наполнение темы: тег принудительный
+            payload["scenario"] = scenario_override
+        elif payload.get("scenario") not in scenarios:   # фолбэк, если ИИ дал свой сценарий
+            payload["scenario"] = "Universal"
     return payload
 
-def run(words, user_id=db.DEFAULT_USER):
+def run(words, user_id=db.DEFAULT_USER, scenario=None):
+    """scenario задаёт принудительный тег сценария всем словам (батч-наполнение темы)."""
     db.init_db()
     ideas, frames, scenarios = _allowed()
     res = {"added": 0, "skipped": 0, "failed": 0}
@@ -106,7 +142,7 @@ def run(words, user_id=db.DEFAULT_USER):
             res["skipped"] += 1
             print(f"= {w}: уже в базе, пропуск")
             continue
-        payload = enrich_word(w, ideas, frames, scenarios)
+        payload = enrich_word(w, ideas, frames, scenarios, scenario_override=scenario)
         if not payload:
             res["failed"] += 1
             print(f"✗ {w}: ИИ не вернул валидный JSON")

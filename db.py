@@ -646,6 +646,15 @@ def confirm_pending(pending_id, user_id=DEFAULT_USER):
         c.execute("UPDATE pending SET status='confirmed' WHERE id=?", (pending_id,))
     return new_id
 
+def confirm_all_pending(user_id=DEFAULT_USER):
+    """Подтвердить всю очередь разом (кнопка «Подтвердить все»). Возвращает число
+    обработанных; слова, уже попавшие в content, схлопываются в confirm_pending."""
+    n = 0
+    for item in list_pending(user_id):
+        if confirm_pending(item["id"], user_id) is not None:
+            n += 1
+    return n
+
 def reject_pending(pending_id, user_id=DEFAULT_USER):
     """Отклонить слово из очереди (status='rejected'). True, если что-то изменилось."""
     with _conn() as c:
