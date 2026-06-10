@@ -249,12 +249,14 @@ def _idle_users(user_data, now=None, idle_sec=IDLE_SUMMARY_SEC):
 # ---------- постоянная клавиатура управления ----------
 BTN_NEW, BTN_REVIEW = "🌅 Новые", "☀️ Повторить"
 BTN_SCEN, BTN_READ = "🎭 Сценарий", "📖 Читать"
-BTN_END, BTN_PROG = "🏁 Итог", "📈 Прогресс"
+BTN_TOPICS, BTN_PROG = "📚 Темы", "📈 Прогресс"
+BTN_END = "🏁 Итог"
 MAIN_KB = ReplyKeyboardMarkup(
-    [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_END, BTN_PROG]],
+    # учиться / выбирать и смотреть / завершить (Итог — во всю ширину, главное действие)
+    [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_TOPICS, BTN_PROG], [BTN_END]],
     resize_keyboard=True, one_time_keyboard=True,   # всплывающая: после нажатия сворачивается
     input_field_placeholder="Пиши по-английски · кнопки: ⌨")  # подсказка у значка возврата
-MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_PROG}  # BTN_END ловится END_WORDS
+MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_TOPICS, BTN_PROG}  # BTN_END — в END_WORDS
 
 async def _route_button(update, ctx, uid, label):
     """Кнопка постоянной клавиатуры -> то же действие, что inline/команда."""
@@ -265,6 +267,8 @@ async def _route_button(update, ctx, uid, label):
         await progress_cmd(update, ctx)
     elif label == BTN_READ:
         await read_cmd(update, ctx)
+    elif label == BTN_TOPICS:
+        await topics_cmd(update, ctx)
     else:
         mode = {BTN_NEW: "new", BTN_REVIEW: "review", BTN_SCEN: "scenario"}[label]
         await _enter_mode(out, ctx, uid, mode, tmsg=m)
@@ -378,8 +382,9 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "☀️ Повторить — карточки, когда пора повторять\n"
         "🎭 Сценарий — ролевая игра: питч, переговоры, собеседование\n"
         "📖 Читать — короткий текст под твой уровень\n"
-        "🏁 Итог — закончить занятие и записать прогресс\n"
-        "📈 Прогресс — что ты уже можешь\n\n"
+        "📚 Темы — учить слова по смыслу или сценарию\n"
+        "📈 Прогресс — что ты уже можешь\n"
+        "🏁 Итог — закончить занятие и записать прогресс\n\n"
         "А ещё:\n"
         "• 🗣️ Поток — без кнопки: просто пиши на английском, отвечу и мягко поправлю\n"
         "  (после Итога ты всегда возвращаешься сюда);\n"
