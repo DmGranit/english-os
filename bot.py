@@ -134,6 +134,7 @@ async def _finish_session(ud, uid, send):
     ctx = types.SimpleNamespace(user_data=ud)      # _call работает только с user_data
     reply = await _call(ctx, ud.get("mode", "flow"), uid, END_PROMPT, with_summary=True)
     data, reply = _extract_summary(reply)
+    reply = _strip_fences(reply)                   # человеческий отчёт — без ```-заборов
     if data:
         r = db.apply_session_summary(data, uid)
         reply += (f"\n\n— записано в базу: повторений {r['ok'] + r['fail']} "
@@ -229,6 +230,13 @@ def _slot_reminder_text(uid, slot):
             return None
         return f"☀️ Дневной слот: Повторить — {len(due)} слов ждут."
     return "🎭 Вечерний слот: Сценарий — разыграем рабочую ситуацию?"
+
+# модель иногда оборачивает человеческий отчёт в ```-заборы (копирует шаблон буквально) —
+# Telegram не знает markdown, и заборы выходят мусором на экране
+_FENCE_LINE = re.compile(r"^\s*```\w*\s*$", re.M)
+
+def _strip_fences(text):
+    return _FENCE_LINE.sub("", text or "").strip()
 
 def _idle_users(user_data, now=None, idle_sec=IDLE_SUMMARY_SEC):
     """Кому пора авто-ИТОГ: есть несведённый диалог и тишина >= idle_sec."""
@@ -445,6 +453,14 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _process_user_text(update, ctx, _learner(update), update.message.text)
 
+def _stt_hints(ctx, uid):
+    """Подсказки Whisper (A7): в разговорных режимах человек говорит по-английски —
+    жёсткий language=en (без него акцент уводит автоопределение в чужой язык);
+    prompt — слова в работе, чтобы именно их Whisper слышал правильно."""
+    lang = "en" if _mode(ctx) in ("scenario", "flow") else None
+    focus = ", ".join(w["word"] for w in db.learning_words(uid)) or None
+    return lang, focus
+
 async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Голосовое: скачать -> распознать речь -> дальше как обычный текст."""
     uid = _learner(update)
@@ -454,7 +470,8 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("Не смог скачать голосовое. Попробуй ещё раз.")
         return
-    text = llm.transcribe(bytes(buf))
+    lang, focus = _stt_hints(ctx, uid)
+    text = await asyncio.to_thread(llm.transcribe, bytes(buf), language=lang, prompt=focus)
     if not text:
         await update.message.reply_text("🎤 Не расслышал. Повтори голосом или напиши текстом.")
         return

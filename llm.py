@@ -48,19 +48,31 @@ def chat(system, messages, max_tokens=600, model=None):
         return "⚠️ Связь с ИИ сейчас недоступна. Попробуй ещё раз через минуту."
 
 
-def transcribe(audio_bytes, filename="voice.ogg"):
+def _stt_body(audio_bytes, filename, boundary, language=None, prompt=None):
+    """Собрать multipart-тело для Whisper. language («en») — жёсткая подсказка языка:
+    без неё короткое аудио с акцентом галлюцинирует (болгарский вместо английского).
+    prompt — слова, смещающие словарь распознавания (то, что ученик сейчас учит)."""
+    def field(name, value):
+        return (f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+    pre = field("model", STT_MODEL)
+    if language:
+        pre += field("language", language)
+    if prompt:
+        pre += field("prompt", prompt)
+    pre += (f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+            f"Content-Type: audio/ogg\r\n\r\n")
+    return pre.encode() + bytes(audio_bytes) + f"\r\n--{boundary}--\r\n".encode()
+
+
+def transcribe(audio_bytes, filename="voice.ogg", language=None, prompt=None):
     """Распознать речь из аудио (OpenAI). Возвращает текст или '' при сбое/без ключа.
     Multipart/form-data собираем вручную (без внешних зависимостей)."""
     if not API_KEY:
         return ""
     boundary = "----englishosBoundary7MA4YWxkTrZu0gW"
-    pre = (f"--{boundary}\r\n"
-           f"Content-Disposition: form-data; name=\"model\"\r\n\r\n{STT_MODEL}\r\n"
-           f"--{boundary}\r\n"
-           f"Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
-           f"Content-Type: audio/ogg\r\n\r\n").encode()
-    post = f"\r\n--{boundary}--\r\n".encode()
-    body = pre + bytes(audio_bytes) + post
+    body = _stt_body(audio_bytes, filename, boundary, language=language, prompt=prompt)
     req = urllib.request.Request(
         "https://api.openai.com/v1/audio/transcriptions", data=body,
         headers={"Authorization": f"Bearer {API_KEY}",
