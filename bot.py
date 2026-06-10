@@ -470,7 +470,8 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "А ещё:\n"
         "• 🗣️ Поток — без кнопки: просто пиши на английском, отвечу и мягко поправлю\n"
         "  (после Итога ты всегда возвращаешься сюда);\n"
-        "• голосовые понимаю 🎤;\n"
+        "• голосовые понимаю 🎤 — говори по-английски (русский жду только\n"
+        "  как перевод на карточке);\n"
         "• «учим invest, traction» — разберу эти слова;\n"
         "• замолчишь на 25 минут — сам подведу итог сессии;\n"
         "• кнопки прячутся после нажатия — вернуть их можно значком ⌨ в строке ввода.\n\n"
@@ -570,11 +571,12 @@ def _stt_hints(ctx, uid):
     word, box = _deck_card(ctx)
     if word:
         if box == 1:
-            return "ru", word["ru"]
+            return "ru", word["ru"]      # единственное место, где ждём русский
         return "en", word["word"]
-    lang = "en" if _mode(ctx) in ("scenario", "flow") else None
+    # вне колоды: en ПО УМОЛЧАНИЮ везде — без подсказки короткие клипы галлюцинируют
+    # (болгарский/валлийский/грузинский кейсы); русские команды лучше текстом
     focus = ", ".join(w["word"] for w in db.learning_words(uid)) or None
-    return lang, focus
+    return "en", focus
 
 async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Голосовое: скачать -> распознать речь -> дальше как обычный текст."""

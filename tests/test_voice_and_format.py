@@ -35,10 +35,13 @@ def test_stt_hints_english_in_conversational_modes(fresh_db):
         assert "invest" in focus                          # слова в работе — в подсказку
 
 
-def test_stt_hints_no_language_outside_conversation(fresh_db):
-    ctx = types.SimpleNamespace(user_data={"mode": "new"})
-    lang, _ = bot._stt_hints(ctx, UID)
-    assert lang is None                                   # «учим …» могут сказать по-русски
+def test_stt_hints_english_is_global_default(fresh_db):
+    """Грузинский кейс: вне колоды и вне разговорных режимов короткий клип
+    галлюцинировал — теперь en по умолчанию ВЕЗДЕ (продукт про английскую речь)."""
+    for mode in ("new", "review"):
+        ctx = types.SimpleNamespace(user_data={"mode": mode})
+        lang, _ = bot._stt_hints(ctx, UID)
+        assert lang == "en"
 
 
 def test_stt_hints_empty_focus_is_none(fresh_db):
