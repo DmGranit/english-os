@@ -825,17 +825,34 @@ def _network_block(word):
         lines.append(f"🧠 фрейм: {word['thinking_frame']}{extra}")
     return "\n".join(lines)
 
-def _review_card_text(word, pos, total, reveal, productive, variant="layered"):
-    """Карточка. Направление: productive=True -> RU→EN, иначе EN→RU.
+def _cloze_for(word):
+    """Коллокация с пропуском целевого слова — для cloze-карточки box 2.
+    None — у слова нет коллокации, содержащей его само (фолбэк в узнавание)."""
+    for c in word.get("collocations") or []:
+        if re.search(re.escape(word["word"]), c, re.I):
+            return re.sub(re.escape(word["word"]), "___", c, flags=re.I)
+    return None
+
+def _review_card_text(word, pos, total, reveal, productive, variant="layered", box=1):
+    """Карточка. Лестница трудности: box 1 — узнавание (EN→RU), box 2 — cloze
+    (чанк с пропуском: тренируем коллокацию как единицу), box 3+ — продукция (RU→EN).
     Вариант: layered показывает «сеть» при раскрытии ответа, flat — только ответ (A/B)."""
     head = f"🔁 Повторение · карточка {pos}/{total}"
     ipa = f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else ""
     ex  = f"\nПример: {word['example']}" if word.get("example") else ""
+    cloze = _cloze_for(word) if (not productive and box == 2) else None
     if productive:                                   # RU -> EN
         if not reveal:
             return (f"{head}\n\nКак сказать по-английски:\n«{word['ru']}»  ({word['dna_idea']})\n\n"
                     f"Вспомни — потом нажми «Показать ответ».")
         answer = f"«{word['ru']}»\n→ {word['word']}{ipa}{ex}"
+    elif cloze:                                      # cloze: вставь слово в чанк
+        if not reveal:
+            return (f"{head}\n\nВставь слово в коллокацию:\n«{cloze}»  "
+                    f"(подсказка: {word['ru']})\n\n"
+                    f"Вспомни — потом нажми «Показать ответ».")
+        answer = (f"«{cloze.replace('___', word['word'])}»\n"
+                  f"→ {word['word']}{ipa} — {word['ru']}{ex}")
     else:                                            # EN -> RU (узнавание)
         if not reveal:
             return (f"{head}\n\nЧто это значит:\n«{word['word']}»{ipa}\n\n"
@@ -853,7 +870,8 @@ def _card_payload(ctx, uid, reveal=False):
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
     productive = box >= db.PRODUCTIVE_FROM_BOX  # зрелое слово -> RU→EN; иначе EN→RU
     ctx.user_data["review_reveal"] = reveal
-    return (_review_card_text(word, pos + 1, len(queue), reveal, productive, _variant(uid, wid)),
+    return (_review_card_text(word, pos + 1, len(queue), reveal, productive,
+                              _variant(uid, wid), box=box),
             _review_kb(reveal))
 
 async def _show_card(q, ctx, uid, reveal=False):
