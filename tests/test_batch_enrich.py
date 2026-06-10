@@ -112,6 +112,23 @@ def test_qa_garbage_verdict_blocks(fresh_db, monkeypatch):
     assert res["failed"] == 1                        # нет вердикта — не пускаем
 
 
+# ---------- уведомление владельцу после пакетного наполнения ----------
+
+def test_owner_notified_when_words_added(fresh_db, monkeypatch):
+    sent = []
+    monkeypatch.setattr(enrich, "_notify_owner", lambda text: sent.append(text))
+    monkeypatch.setattr(llm, "chat", _qa_aware(lambda s, m: _fake_payload("menu")))
+    enrich.run(["menu"], user_id=UID)
+    assert sent and "+1" in sent[0] and "/pending" in sent[0]
+
+
+def test_owner_not_notified_when_nothing_added(fresh_db, monkeypatch):
+    sent = []
+    monkeypatch.setattr(enrich, "_notify_owner", lambda text: sent.append(text))
+    enrich.run(["invest"], user_id=UID)              # дубль — added=0
+    assert sent == []
+
+
 # ---------- confirm_all_pending: кнопка «Подтвердить все» ----------
 
 def test_confirm_all_pending(fresh_db):

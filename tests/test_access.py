@@ -49,6 +49,17 @@ def test_ensure_roles_bootstrap_idempotent(fresh_db):
     assert fresh_db.get_role(STRANGER) == "blocked"
 
 
+# ---------- бейдж очереди в /start для владельца ----------
+
+def test_owner_badge_shows_pending(fresh_db, monkeypatch):
+    monkeypatch.setattr(bot, "OWNER_ID", UID)
+    assert bot._owner_badge(UID) is None                     # очередь пуста — нет бейджа
+    fresh_db.add_pending("traction", {"ru": "тяга"}, bot.CONTENT_USER)
+    badge = bot._owner_badge(UID)
+    assert badge and "1" in badge and "/pending" in badge
+    assert bot._owner_badge(999) is None                     # не владельцу не показываем
+
+
 # ---------- /users: данные списка ----------
 
 def test_list_users_shows_roles_and_progress(fresh_db):

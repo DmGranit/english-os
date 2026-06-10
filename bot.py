@@ -293,6 +293,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     day_line = _day_line(uid)                 # карта дня — только для программы 'cycle'
     if day_line:
         lead += "\n\n" + day_line
+    badge = _owner_badge(uid)                 # владельцу — хвост очереди на подтверждение
+    if badge:
+        lead += "\n\n" + badge
     await update.message.reply_text(
         lead + "\n\nКнопки управления — снизу 👇 Справка: /help", reply_markup=MAIN_KB)
 
@@ -1048,6 +1051,13 @@ async def on_access(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         db.set_role(uid, "blocked")
         await q.edit_message_text(f"🚫 Отклонён: id {uid}. Список: /users")
+
+def _owner_badge(uid):
+    """Бейдж в /start для владельца: сколько слов ждут подтверждения. None — нечего/не владелец."""
+    if not OWNER_ID or uid != OWNER_ID:
+        return None
+    n = len(db.list_pending(CONTENT_USER))
+    return f"📥 В очереди на подтверждение: {n} слов — /pending" if n else None
 
 _ROLE_MARK = {"owner": "👑", "approved": "✅", "pending": "🔔", "blocked": "🚫"}
 

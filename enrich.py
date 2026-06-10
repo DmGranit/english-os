@@ -9,8 +9,24 @@
 Нужен LLM_API_KEY (как у бота). Без ключа llm.chat вернёт заглушку — не JSON —
 и слова уйдут в "failed": это нормально, плумбинг при этом проверяем на мок-ИИ.
 """
-import sys, json, re
+import os, sys, json, re, urllib.parse, urllib.request
 import db, llm
+
+
+def _notify_owner(text):
+    """Одна сводка владельцу после пакетного наполнения (бот пишет первым).
+    Без TELEGRAM_TOKEN/OWNER_ID — тихо пропускается (тесты, локальные прогоны)."""
+    tok = os.environ.get("TELEGRAM_TOKEN")
+    owner = os.environ.get("OWNER_ID")
+    if not (tok and owner):
+        return
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{tok}/sendMessage",
+            data=urllib.parse.urlencode({"chat_id": owner, "text": text}).encode()),
+            timeout=10)
+    except Exception:
+        pass
 
 LEVELS = {"A1", "A2", "B1", "B2", "C1", "C2"}
 REGISTERS = {"formal", "neutral", "informal"}
@@ -124,11 +140,13 @@ def qa_payload(payload):
     system = (
         "Ты — въедливый рецензент словарных карточек делового английского. Проверь карточку:\n"
         "1) ru — точный перевод слова word; 2) collocations — РЕАЛЬНЫЕ устойчивые сочетания "
-        "именно с этим словом; 3) root — настоящий греко-латинский/германский корень "
-        "(сомнительно или выдумано -> drop_root=true); 4) example — естественное предложение.\n"
+        "именно с этим словом; 3) root: ЕСЛИ УКАЗАН — настоящий ли корень "
+        "(сомнительно/выдумано -> drop_root=true); root=null — это НОРМА, не недостаток; "
+        "4) example — естественное предложение.\n"
         'Верни СТРОГО один JSON: {"ok": true|false, "drop_root": true|false, "reason": "кратко"}.\n'
         "ok=false ТОЛЬКО при серьёзной ошибке (неверный перевод, выдуманные коллокации, "
-        "пример с другим словом). Сомнительный корень — это drop_root, а не ok=false.")
+        "пример с другим словом). Сомнительный корень — это drop_root, а не ok=false; "
+        "отсутствие корня — вообще не замечание.")
     raw = llm.chat(system, [{"role": "user",
                              "content": json.dumps(payload, ensure_ascii=False)}])
     verdict = _parse(raw)
@@ -179,6 +197,9 @@ def run(words, user_id=db.DEFAULT_USER, scenario=None):
         res["added"] += 1
         print(f"✓ {w}: в очередь /pending ({payload['ru']}, {payload['level']})")
     print("Итог:", res, "— подтверди слова в боте командой /pending")
+    if res["added"]:                                # сводка владельцу: пора разбирать очередь
+        _notify_owner(f"📥 Очередь пополнена: +{res['added']} слов "
+                      f"(ждут {len(db.list_pending(user_id))}). Подтвердить: /pending")
     return res
 
 def _load_words(argv):
