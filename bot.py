@@ -359,13 +359,15 @@ def _idle_users(user_data, now=None, idle_sec=IDLE_SUMMARY_SEC):
 BTN_NEW, BTN_REVIEW = "🌅 Новые", "☀️ Повторить"
 BTN_SCEN, BTN_READ = "🎭 Сценарий", "📖 Читать"
 BTN_TOPICS, BTN_PROG = "📚 Темы", "📈 Прогресс"
-BTN_END = "🏁 Итог"
+BTN_MYWORDS, BTN_END = "📒 Слова", "🏁 Итог"
 MAIN_KB = ReplyKeyboardMarkup(
-    # учиться / выбирать и смотреть / завершить (Итог — во всю ширину, главное действие)
-    [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_TOPICS, BTN_PROG], [BTN_END]],
+    # учиться · учиться · смотреть · завершить
+    [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ],
+     [BTN_TOPICS, BTN_MYWORDS], [BTN_PROG, BTN_END]],
     resize_keyboard=True, one_time_keyboard=True,   # сворачивается в значок ⌨ (is_persistent
     input_field_placeholder="Кнопки — значок ⌨ справа")  # застревал открытым поверх меню команд)
-MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_TOPICS, BTN_PROG}  # BTN_END — в END_WORDS
+MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ,
+                BTN_TOPICS, BTN_MYWORDS, BTN_PROG}   # BTN_END — в END_WORDS
 
 async def _route_button(update, ctx, uid, label):
     """Кнопка постоянной клавиатуры -> то же действие, что inline/команда."""
@@ -378,6 +380,8 @@ async def _route_button(update, ctx, uid, label):
         await read_cmd(update, ctx)
     elif label == BTN_TOPICS:
         await topics_cmd(update, ctx)
+    elif label == BTN_MYWORDS:
+        await mywords_cmd(update, ctx)
     else:
         mode = {BTN_NEW: "new", BTN_REVIEW: "review", BTN_SCEN: "scenario"}[label]
         await _enter_mode(out, ctx, uid, mode, tmsg=m)

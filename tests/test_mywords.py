@@ -5,6 +5,31 @@ import bot, db
 from conftest import UID
 
 
+# ---------- кнопка «📒 Слова» в клавиатуре ----------
+
+def test_mywords_button_in_keyboard():
+    labels = [b["text"] for row in bot.MAIN_KB.to_dict()["keyboard"] for b in row]
+    assert bot.BTN_MYWORDS in labels
+    assert bot.BTN_MYWORDS in bot.MAIN_BUTTONS
+
+
+def test_mywords_button_routes(fresh_db):
+    import asyncio, types
+    fresh_db.start_learning([1, 2], UID)
+    sent = []
+
+    async def reply_text(text, reply_markup=None, parse_mode=None):
+        sent.append(text)
+        return types.SimpleNamespace()
+
+    update = types.SimpleNamespace(
+        message=types.SimpleNamespace(reply_text=reply_text),
+        effective_user=types.SimpleNamespace(id=UID))
+    ctx = types.SimpleNamespace(user_data={})
+    asyncio.run(bot._route_button(update, ctx, UID, bot.BTN_MYWORDS))
+    assert any("invest" in s for s in sent)
+
+
 # ---------- db: список слов в работе ----------
 
 def test_my_words_lists_learning(fresh_db):

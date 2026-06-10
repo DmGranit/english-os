@@ -37,9 +37,9 @@ def test_review_empty_keeps_keyboard_untouched(fresh_db):
 # ---------- раскладка панели: Темы в панели, Итог во всю ширину ----------
 
 def test_main_kb_layout(fresh_db):
-    rows = [[b["text"] for b in row] for row in bot.MAIN_KB.to_dict()["keyboard"]]
-    assert [bot.BTN_TOPICS, bot.BTN_PROG] in rows         # Темы — в панели, не в /меню
-    assert [bot.BTN_END] in rows                          # Итог — во всю ширину
+    flat = [b["text"] for row in bot.MAIN_KB.to_dict()["keyboard"] for b in row]
+    for btn in (bot.BTN_TOPICS, bot.BTN_MYWORDS, bot.BTN_PROG, bot.BTN_END):
+        assert btn in flat                               # все кнопки на панели
     assert bot.BTN_TOPICS in bot.MAIN_BUTTONS
 
 
