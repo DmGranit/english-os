@@ -55,10 +55,11 @@ def _run_finish(ud, monkeypatch, reply):
 
 def test_finish_session_applies_and_clears(fresh_db, monkeypatch):
     fresh_db.start_learning([1], UID)                       # invest в box 1
-    ud = {"mode": "flow", "history": [{"role": "user", "content": "invest is great"}]}
+    ud = {"mode": "scenario", "history": [{"role": "user", "content": "invest is great"}]}
     sent, n_llm = _run_finish(ud, monkeypatch, REPORT)
     assert n_llm == 1
     assert ud["history"] == []                              # сессия закрыта
+    assert ud["mode"] == "flow"                             # роль снята: дальше — просто разговор
     assert len(sent) == 2                                   # отчёт + носитель клавиатуры
     assert "записано в базу" in sent[0]
     with fresh_db._conn() as c:                             # ИТОГ дошёл до SRS
