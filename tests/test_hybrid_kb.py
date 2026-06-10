@@ -9,8 +9,8 @@ REPORT = 'Отчёт.\n```json\n{"reviewed": [], "add": [], "errors": []}\n```'
 
 def test_main_kb_has_placeholder():
     kb = bot.MAIN_KB.to_dict()
-    assert kb.get("one_time_keyboard") is True
-    assert "⌨" in (kb.get("input_field_placeholder") or "")
+    assert kb.get("is_persistent") is True          # видна всегда (one_time прятал кнопки)
+    assert kb.get("input_field_placeholder")
 
 
 def test_next_action_text_free_and_cycle(fresh_db):

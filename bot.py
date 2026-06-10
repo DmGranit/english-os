@@ -363,8 +363,8 @@ BTN_END = "🏁 Итог"
 MAIN_KB = ReplyKeyboardMarkup(
     # учиться / выбирать и смотреть / завершить (Итог — во всю ширину, главное действие)
     [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_TOPICS, BTN_PROG], [BTN_END]],
-    resize_keyboard=True, one_time_keyboard=True,   # всплывающая: после нажатия сворачивается
-    input_field_placeholder="Пиши по-английски · кнопки: ⌨")  # подсказка у значка возврата
+    resize_keyboard=True, is_persistent=True,       # ВИДНА ВСЕГДА (one_time прятал — терялись кнопки)
+    input_field_placeholder="Пиши по-английски или жми кнопки 👇")
 MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_TOPICS, BTN_PROG}  # BTN_END — в END_WORDS
 
 async def _route_button(update, ctx, uid, label):
@@ -485,6 +485,24 @@ async def on_program(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await q.edit_message_text(
             "🆓 Свободный режим: занимайся, как удобно. Вернуть программу — /program.")
+
+_BOX_TAG = {1: "🟡", 2: "🟡", 3: "🟢", 4: "🟢", 5: "🌳"}
+
+async def mywords_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """📒 Мои слова — что ученик сейчас учит (из базы, без LLM)."""
+    d = db.my_words(_learner(update))
+    if not d["learning"] and not d["mastered_n"]:
+        await update.message.reply_text(
+            "Пока ничего не учишь 🌱 Жми 🌅 Новые — начнём!")
+        return
+    lines = [f"📒 Сейчас в работе ({len(d['learning'])}):"]
+    for w in d["learning"][:25]:
+        lines.append(f"{_BOX_TAG.get(w['box'], '🟡')} {w['word']} — {w['ru']}")
+    if len(d["learning"]) > 25:
+        lines.append(f"…и ещё {len(d['learning']) - 25}")
+    lines.append(f"\n🌳 Освоено: {d['mastered_n']} · впереди в базе: {d['new_n']}")
+    lines.append("🟡 знакомлюсь · 🟢 закрепляю · 🌳 освоено")
+    await _say(update.message, "\n".join(lines))
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/help — как пользоваться ботом (все ритуалы наглядно)."""
@@ -1937,6 +1955,7 @@ async def _post_init(app):
         BotCommand("help", "как пользоваться"),
         BotCommand("read", "чтение под мой уровень"),
         BotCommand("progress", "мой прогресс"),
+        BotCommand("mywords", "мои слова в работе"),
         BotCommand("mistakes", "мои частые ошибки"),
         BotCommand("add", "добавить слова в учёбу"),
         BotCommand("topics", "учить слова по теме"),
@@ -1990,6 +2009,7 @@ def main():
     app.add_handler(CommandHandler("progress", progress_cmd))
     app.add_handler(CommandHandler("remind", remind_cmd))
     app.add_handler(CommandHandler("pace", pace_cmd))
+    app.add_handler(CommandHandler("mywords", mywords_cmd))
     app.add_handler(CommandHandler("program", program_cmd))
     app.add_handler(CommandHandler("topics", topics_cmd))
     app.add_handler(CallbackQueryHandler(on_mode, pattern=r"^mode:"))

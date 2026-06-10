@@ -1077,6 +1077,22 @@ CANDO = [
      "ru": "Могу участвовать в мозговом штурме и предлагать идеи"},
 ]
 
+def my_words(user_id=DEFAULT_USER):
+    """Список слов в работе + счётчики освоенного/нового — для «📒 Мои слова».
+    Детерминированно из базы (без LLM): ученик видит, ЧТО он учит."""
+    with _conn() as c:
+        learning = [{"word": r["word"], "ru": r["ru"], "box": r["box"]}
+                    for r in c.execute(
+                        """SELECT cc.word, cc.ru, s.box FROM state s JOIN content cc USING(word_id)
+                           WHERE s.user_id=? AND s.status IN ('learning','forgot') AND s.box<3
+                           ORDER BY s.box DESC, cc.priority DESC""", (user_id,))]
+        mastered_n = c.execute("""SELECT COUNT(*) FROM state
+                                  WHERE user_id=? AND (status='known' OR box>=3)""",
+                               (user_id,)).fetchone()[0]
+        new_n = c.execute("SELECT COUNT(*) FROM state WHERE user_id=? AND status='new'",
+                          (user_id,)).fetchone()[0]
+    return {"learning": learning, "mastered_n": mastered_n, "new_n": new_n}
+
 def progress_summary(user_id=DEFAULT_USER):
     """Сводка пути для /progress. Показывает УСИЛИЕ (повторения, точность) и три ступени
     зрелости, а не только финал — иначе после большой сессии «освоено 0» демотивирует.
