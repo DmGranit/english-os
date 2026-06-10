@@ -142,11 +142,10 @@ async def _finish_session(ud, uid, send):
     db.backup()
     db.log_session(uid, ud.get("mode", "flow"))    # след сессии — для карты дня
     ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
-    hint = _next_slot_hint(uid)                    # после log_session: слот уже учтён
-    if hint:
-        reply += "\n\n" + hint
     for p in _chunks(reply):                       # отчёт может не влезть в одно сообщение
         await send(p)
+    # носитель клавиатуры: подсказка слота (cycle) или нейтральный текст (free)
+    await send(_next_action_text(uid), reply_markup=MAIN_KB)
 
 # ---------- программа дня: слоты, карта, подсказки ----------
 _SLOTS = [("new", "🌅", "Новые"), ("review", "☀️", "Повторить"), ("scenario", "🎭", "Сценарий")]
@@ -211,6 +210,11 @@ def _next_slot_hint(uid):
     nxt = next((s for s in _SLOTS if not m[s[0]]), None)
     return f"Дальше по программе: {nxt[1]} {nxt[2]}" if nxt else "Все слоты дня закрыты 🎉"
 
+def _next_action_text(uid):
+    """Текст сообщения-носителя клавиатуры после завершения занятия (гибрид:
+    кнопки всплывают ровно в момент выбора следующего действия)."""
+    return _next_slot_hint(uid) or "Что дальше? 👇"
+
 def _slot_reminder_text(uid, slot):
     """Текст слотового напоминания. None — молчим: слот уже закрыт или делать нечего."""
     if db.day_map(uid).get(slot):
@@ -238,8 +242,8 @@ BTN_SCEN, BTN_READ = "🎭 Сценарий", "📖 Читать"
 BTN_END, BTN_PROG = "🏁 Итог", "📈 Прогресс"
 MAIN_KB = ReplyKeyboardMarkup(
     [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_END, BTN_PROG]],
-    resize_keyboard=True, one_time_keyboard=True)   # всплывающая: после нажатия сворачивается,
-                                                    # возвращается значком ⌨ в строке ввода
+    resize_keyboard=True, one_time_keyboard=True,   # всплывающая: после нажатия сворачивается
+    input_field_placeholder="Пиши по-английски · кнопки: ⌨")  # подсказка у значка возврата
 MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_PROG}  # BTN_END ловится END_WORDS
 
 async def _route_button(update, ctx, uid, label):
@@ -687,13 +691,13 @@ async def _finish_review(q, ctx, uid):
     ok   = ctx.user_data.get("review_ok", 0)
     fail = ctx.user_data.get("review_fail", 0)
     db.backup()
-    hint = _next_slot_hint(uid)               # подсказка слота — только для программы 'cycle'
     await q.edit_message_text(
         f"🔁 Повторение завершено!\n\n"
         f"Карточек: {ok + fail}\n✅ Вспомнил: {ok}\n❌ Забыл: {fail}\n\n"
-        f"Прогресс сохранён. /start — вернуться в меню."
-        + (f"\n{hint}" if hint else "")
+        f"Прогресс сохранён."
     )
+    # носитель клавиатуры (reply-клавиатуру нельзя приложить к edit — только новым сообщением)
+    await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
 
 # ---------- нажатия кнопок в карточках повторения ----------
 async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1198,8 +1202,8 @@ async def _idle_loop(app):
         for uid in _idle_users(app.user_data):
             ud = app.user_data[uid]
 
-            async def send(text, _uid=uid):
-                await app.bot.send_message(_uid, text)
+            async def send(text, _uid=uid, **kw):
+                await app.bot.send_message(_uid, text, **kw)
 
             try:
                 await app.bot.send_message(uid, "🕐 Тишина 25 минут — подвожу итог сессии.")

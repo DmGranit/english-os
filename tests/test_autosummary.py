@@ -46,7 +46,7 @@ def _run_finish(ud, monkeypatch, reply):
     monkeypatch.setattr(db, "backup", lambda: "skipped")   # не плодить файлы в backups/
     sent = []
 
-    async def send(text):
+    async def send(text, reply_markup=None):
         sent.append(text)
 
     asyncio.run(bot._finish_session(ud, UID, send))
@@ -59,7 +59,7 @@ def test_finish_session_applies_and_clears(fresh_db, monkeypatch):
     sent, n_llm = _run_finish(ud, monkeypatch, REPORT)
     assert n_llm == 1
     assert ud["history"] == []                              # сессия закрыта
-    assert len(sent) == 1
+    assert len(sent) == 2                                   # отчёт + носитель клавиатуры
     assert "записано в базу" in sent[0]
     with fresh_db._conn() as c:                             # ИТОГ дошёл до SRS
         box = c.execute("SELECT box FROM state WHERE user_id=? AND word_id=1",
@@ -78,6 +78,6 @@ def test_finish_session_without_json_still_reports(fresh_db, monkeypatch):
     """Модель не отдала машинный блок — пользователь всё равно получает текст, без падения."""
     ud = {"mode": "flow", "history": [{"role": "user", "content": "hello"}]}
     sent, _ = _run_finish(ud, monkeypatch, "Просто текст отчёта без JSON.")
-    assert len(sent) == 1
+    assert len(sent) == 2                                   # отчёт + носитель клавиатуры
     assert "Просто текст отчёта" in sent[0]
     assert ud["history"] == []

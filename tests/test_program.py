@@ -59,7 +59,7 @@ def test_finish_session_logs_mode(fresh_db, monkeypatch):
     monkeypatch.setattr(llm, "chat", lambda *a, **k: "Отчёт.")
     monkeypatch.setattr(db, "backup", lambda: None)
 
-    async def send(text):
+    async def send(text, reply_markup=None):
         pass
 
     ud = {"mode": "scenario", "history": [{"role": "user", "content": "hi"}]}
@@ -75,7 +75,7 @@ def test_finish_session_logs_mode(fresh_db, monkeypatch):
 def test_finish_session_empty_history_not_logged(fresh_db, monkeypatch):
     monkeypatch.setattr(db, "backup", lambda: None)
 
-    async def send(text):
+    async def send(text, reply_markup=None):
         pass
 
     asyncio.run(bot._finish_session({"mode": "flow", "history": []}, UID, send))
