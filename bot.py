@@ -53,13 +53,16 @@ def _remember(hist, role, content):
 
 # машинный блок ```json {...}``` в конце ответа модели (контракт ИТОГ)
 _JSON_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+# ИТОГ = человеческий отчёт + машинный JSON: дефолтных 600 токенов не хватает, JSON обрезается
+SUMMARY_MAX_TOKENS = 1600
 
 def _extract_summary(text):
     """Вырезать машинный JSON-блок из ответа модели.
     Возвращает (данные|None, текст_без_json для показа пользователю)."""
-    m = _JSON_BLOCK.search(text)
-    if not m:
+    matches = list(_JSON_BLOCK.finditer(text))
+    if not matches:
         return None, text
+    m = matches[-1]      # по контракту машинный блок — ПОСЛЕДНИЙ; раньше могут быть примеры
     try:
         data = json.loads(m.group(1))
     except Exception:
@@ -334,7 +337,11 @@ async def _call(ctx, mode, uid, user_text, with_summary=False):
     hist = _history(ctx)
     _remember(hist, "user", user_text)
     model = SMART_MODEL if mode in SMART_MODES else None   # диалог -> умная модель; структура -> дешёвая
-    reply = await asyncio.to_thread(llm.chat, system, hist, model=model)
+    if with_summary:
+        reply = await asyncio.to_thread(llm.chat, system, hist,
+                                        model=model, max_tokens=SUMMARY_MAX_TOKENS)
+    else:
+        reply = await asyncio.to_thread(llm.chat, system, hist, model=model)
     _remember(hist, "assistant", reply)
     return reply
 

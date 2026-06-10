@@ -14,5 +14,9 @@ archive/
 *.key
 secrets*
 
+# тесты
+.pytest_cache/
+.pytest_tmp/
+
 # прочее
 *.log
