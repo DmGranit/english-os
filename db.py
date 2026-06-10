@@ -564,15 +564,27 @@ def scenario_list(min_n=5):
                WHERE scenario IS NOT NULL AND scenario<>'' GROUP BY scenario
                HAVING n >= ? ORDER BY n DESC""", (min_n,)).fetchall()]
 
-def theme_words(axis, value, user_id=DEFAULT_USER, n=5):
-    """Слова темы (axis 'idea'|'scn'): сначала ещё не введённые (new), потом любые."""
+def theme_words(axis, value, user_id=DEFAULT_USER, n=5, band=None):
+    """Слова темы (axis 'idea'|'scn'): сначала ещё не введённые (new), потом любые.
+    band — полоса комфорта: слова уровня полосы и ниже идут первыми (скрытая адаптация)."""
     col = "dna_idea" if axis == "idea" else "scenario"
     with _conn() as c:
-        rows = c.execute(f"""SELECT c.word_id FROM content c
-                             JOIN state s ON s.word_id=c.word_id AND s.user_id=?
-                             WHERE c.{col}=?
-                             ORDER BY (s.status='new') DESC, c.priority DESC LIMIT ?""",
-                         (user_id, value, n)).fetchall()
+        if band:
+            order = ["A1", "A2", "B1", "B2", "C1", "C2"]
+            allowed = order[:order.index(band) + 1] if band in order else order
+            qm = ",".join("?" * len(allowed))
+            rows = c.execute(f"""SELECT c.word_id FROM content c
+                                 JOIN state s ON s.word_id=c.word_id AND s.user_id=?
+                                 WHERE c.{col}=?
+                                 ORDER BY (c.level IN ({qm})) DESC, (s.status='new') DESC,
+                                          c.priority DESC LIMIT ?""",
+                             (user_id, value, *allowed, n)).fetchall()
+        else:
+            rows = c.execute(f"""SELECT c.word_id FROM content c
+                                 JOIN state s ON s.word_id=c.word_id AND s.user_id=?
+                                 WHERE c.{col}=?
+                                 ORDER BY (s.status='new') DESC, c.priority DESC LIMIT ?""",
+                             (user_id, value, n)).fetchall()
     return [get_word(r["word_id"]) for r in rows]
 
 # ---------- сеть: запросы по связям ----------

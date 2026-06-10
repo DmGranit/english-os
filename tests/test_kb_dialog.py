@@ -19,9 +19,14 @@ def _enter(fresh_db, mode):
     return captured.get("markup")
 
 
-def test_dialog_modes_remove_keyboard(fresh_db):
-    for mode in ("scenario", "flow"):
-        assert isinstance(_enter(fresh_db, mode), ReplyKeyboardRemove)
+def test_flow_removes_keyboard(fresh_db):
+    assert isinstance(_enter(fresh_db, "flow"), ReplyKeyboardRemove)
+
+
+def test_scenario_entry_shows_presets(fresh_db):
+    from telegram import InlineKeyboardMarkup
+    # сценарий теперь предлагает пресеты; Remove переехал на старт самой сессии
+    assert isinstance(_enter(fresh_db, "scenario"), InlineKeyboardMarkup)
 
 
 def test_review_empty_keeps_keyboard_untouched(fresh_db):

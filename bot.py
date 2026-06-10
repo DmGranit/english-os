@@ -138,6 +138,22 @@ async def _reply_render(msg, text, markup=None):
     except Exception:
         return await msg.reply_text(text, reply_markup=markup)
 
+async def _swap_in(ph, reply, markup=None):
+    """Заменить плейсхолдер «⏳…» готовым ответом: HTML, чанки, фолбэк в плоский текст."""
+    parts = _chunks(reply)
+    try:
+        await ph.edit_text(_to_html(parts[0]), parse_mode="HTML",
+                           reply_markup=markup if len(parts) == 1 else None)
+    except Exception:
+        try:
+            await ph.edit_text(parts[0], reply_markup=markup if len(parts) == 1 else None)
+        except Exception:
+            pass
+    m = ph
+    for k, p in enumerate(parts[1:], start=2):
+        m = await _reply_render(m, p, markup if k == len(parts) else None)
+    return m
+
 async def _say(msg, text, markup=None):
     """reply_text с разрезанием под лимит и HTML-отрисовкой; клавиатура — на последней части."""
     parts = _chunks(text)
@@ -200,6 +216,7 @@ async def _finish_session(ud, uid, send):
     db.log_session(uid, ud.get("mode", "flow"))    # след сессии — для карты дня
     ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
     ud["mode"] = "flow"                            # роль снята: следующий текст — просто разговор
+    ud.pop("scn_words", None)                      # целевые слова сессии больше не грунтуются
     for p in _chunks(reply):                       # отчёт может не влезть в одно сообщение
         try:
             await send(_to_html(p), parse_mode="HTML")
@@ -521,13 +538,14 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         text, kb = _card_payload(ctx, uid)     # показать первую карточку
         await out(text, kb)
 
-    else:  # scenario / flow — диалог: клавиатура с экрана убирается целиком,
-           # вернётся сама с носителем после ИТОГа (one_time её прятал не до конца:
-           # Telegram показывал кнопки снова при закрытии системной клавиатуры)
-        await out({
-            "scenario": "🎭 Сценарий. Назови ситуацию (питч, переговоры, статус) — войду в роль.",
-            "flow": "🗣️ Поток. Просто общаемся на английском — пиши или говори голосом.",
-        }[mode], ReplyKeyboardRemove())
+    elif mode == "scenario":   # пресеты живых тем + свой вариант текстом (канон 3.4)
+        await out("🎭 Выбери ситуацию — или просто напиши свою (например: «питч инвестору»):",
+                  _scenario_kb())
+
+    else:  # flow — диалог: клавиатура с экрана убирается целиком,
+           # вернётся сама с носителем после ИТОГа (one_time её прятал не до конца)
+        await out("🗣️ Поток. Просто общаемся на английском — пиши или говори голосом.",
+                  ReplyKeyboardRemove())
 
 # ---------- обычное сообщение (текст и голос идут одним путём) ----------
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -660,6 +678,43 @@ async def _teach_words(update, ctx, uid, words):
         await update.message.reply_text(
             f"Добавил {res['added']} в очередь /pending (подтвердит админ).")
 
+# ---------- сценарий-сессия: пресеты + мини-цикл «слова → образец → роль» (канон 3.4) ----------
+def _scenario_kb():
+    """Пресеты ролевых ситуаций — живые темы базы (есть чем грунтовать роль)."""
+    pairs = db.scenario_list(min_n=15)[:8]
+    btns = [InlineKeyboardButton(name, callback_data=f"scn:{name}") for name, _ in pairs]
+    return InlineKeyboardMarkup([btns[i:i + 2] for i in range(0, len(btns), 2)])
+
+async def _begin_scenario(msg, ctx, uid, scenario):
+    """Старт сценарий-сессии: слова сценария под полосу (в SRS) → i+1-образец →
+    бот в роли, грунтованный целевыми словами. Полоса скрыта, ИТОГ закрывает как обычно."""
+    ph = await msg.reply_text("⏳ Готовлю сценарий…", reply_markup=ReplyKeyboardRemove())
+    db.ensure_user_state(uid)
+    wd = db.theme_words("scn", scenario, uid, n=4, band=db.get_band(uid))
+    ids = [w["word_id"] for w in wd]
+    db.start_learning(ids, uid)
+    ctx.user_data.pop("awaiting_slot_hours", None)
+    ctx.user_data.update(mode="scenario", history=[], scn_words=ids)
+    seed = (f"СЦЕНАРИЙ-СЕССИЯ: «{scenario}». Один ответ, три шага:\n"
+            "1) ЦЕЛЕВЫЕ СЛОВА — по строке на каждое: слово — перевод — короткая коллокация.\n"
+            "2) ОБРАЗЕЦ — мини-диалог 4–6 реплик по сценарию: ~98% простой лексики + целевые "
+            "слова, порядок слов SVOMPT.\n"
+            "3) РОЛЬ — войди в собеседника этого сценария и начни сцену первой репликой. "
+            "Дальше держи роль по правилам режима (ошибки копи молча до ИТОГа).\n"
+            + db.format_for_agent(wd))
+    system = prompts.assemble("scenario") + "\n\n" + db.learner_profile(uid)
+    hist = ctx.user_data["history"]
+    _remember(hist, "user", seed)
+    reply = await asyncio.to_thread(llm.chat, system, hist, model=SMART_MODEL)
+    _remember(hist, "assistant", reply)
+    await _swap_in(ph, reply)
+
+async def on_scenario(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    scenario = q.data.split(":", 1)[1]
+    await _begin_scenario(q.message, ctx, _learner(update), scenario)
+
 # ---------- «📚 Темы»: навигация по DNA-идеям и сценариям ----------
 def _axis_kb():
     return InlineKeyboardMarkup([
@@ -709,6 +764,11 @@ async def _call(ctx, mode, uid, user_text, with_summary=False):
     if matched:
         system += ("\n\nСЛОВА ИЗ БАЗЫ в реплике (для «💬 Natural» бери ИХ коллокации/сеть, не выдумывай):\n"
                    + db.format_for_agent(matched))
+    scn_ids = ctx.user_data.get("scn_words")   # сценарий-сессия: целевые слова в каждой реплике
+    if scn_ids:
+        scn_wd = [w for w in (db.get_word(i) for i in scn_ids) if w]
+        system += ("\n\nЦЕЛЕВЫЕ СЛОВА СЦЕНАРИЯ (вплетай в свои реплики и строй сцену так, "
+                   "чтобы ученик ими пользовался):\n" + db.format_for_agent(scn_wd))
     hist = _history(ctx)
     _remember(hist, "user", user_text)
     model = SMART_MODEL if mode in SMART_MODES else None   # диалог -> умная модель; структура -> дешёвая
@@ -1509,6 +1569,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_pace, pattern=r"^pace:"))
     app.add_handler(CallbackQueryHandler(on_calendar, pattern=r"^cal:"))
     app.add_handler(CallbackQueryHandler(on_program, pattern=r"^prog:"))
+    app.add_handler(CallbackQueryHandler(on_scenario, pattern=r"^scn:"))
     app.add_handler(CallbackQueryHandler(on_topics, pattern=r"^topics$"))
     app.add_handler(CallbackQueryHandler(on_topax, pattern=r"^topax:"))
     app.add_handler(CallbackQueryHandler(on_topic, pattern=r"^topic:"))
