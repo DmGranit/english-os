@@ -531,10 +531,38 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/remind напоминания · /add слова в очередь",
         reply_markup=MAIN_KB)
 
+# ---------- Слой Б: ручной руль сложности (полоса скрыта, ярлык не показываем) ----------
+def _difficulty_kb():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬇️ Проще", callback_data="diff:down"),
+        InlineKeyboardButton("⬆️ Сложнее", callback_data="diff:up"),
+    ]])
+
+async def _apply_difficulty(uid, direction):
+    band, moved = db.nudge_band(uid, direction)
+    if not moved:
+        return ("Ты уже на максимуме 💪 Дальше — только новые слова посложнее."
+                if direction > 0 else "Это самый мягкий темп 🌱 Не переживай, всё получится.")
+    return ("💪 Добавил сложности: слова будут потруднее и раньше спрошу на продукцию."
+            if direction > 0 else "🌱 Сделал помягче: слова попроще, без спешки.")
+
+async def on_difficulty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    msg = await _apply_difficulty(_learner(update), +1 if q.data == "diff:up" else -1)
+    await q.edit_message_text(msg)
+
+async def harder_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(await _apply_difficulty(_learner(update), +1))
+
+async def easier_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(await _apply_difficulty(_learner(update), -1))
+
 async def pace_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/pace — выбрать темп заново (без оценки уровня)."""
+    """/pace — руль сложности в любой момент (двигает скрытую полосу, ярлык не показываем)."""
     await update.message.reply_text(
-        "С каким темпом продолжить? Это не оценка — подстроюсь.", reply_markup=_pace_kb())
+        "Как тебе сложность? Можешь подкрутить в любой момент — подстроюсь.",
+        reply_markup=_difficulty_kb())
 
 # ---------- переключение режима (inline-кнопка и постоянная клавиатура) ----------
 async def on_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1963,7 +1991,7 @@ async def _post_init(app):
         BotCommand("mistakes", "мои частые ошибки"),
         BotCommand("add", "добавить слова в учёбу"),
         BotCommand("topics", "учить слова по теме"),
-        BotCommand("pace", "сменить темп / сложность"),
+        BotCommand("pace", "сложность: проще / сложнее"),
         BotCommand("program", "программа занятий"),
         BotCommand("remind", "напоминания о повторении"),
         BotCommand("feedback", "сообщить о проблеме"),
@@ -2014,6 +2042,9 @@ def main():
     app.add_handler(CommandHandler("remind", remind_cmd))
     app.add_handler(CommandHandler("pace", pace_cmd))
     app.add_handler(CommandHandler("mywords", mywords_cmd))
+    app.add_handler(CommandHandler("harder", harder_cmd))
+    app.add_handler(CommandHandler("easier", easier_cmd))
+    app.add_handler(CallbackQueryHandler(on_difficulty, pattern=r"^diff:"))
     app.add_handler(CommandHandler("program", program_cmd))
     app.add_handler(CommandHandler("topics", topics_cmd))
     app.add_handler(CallbackQueryHandler(on_mode, pattern=r"^mode:"))
