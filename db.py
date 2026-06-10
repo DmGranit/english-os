@@ -60,11 +60,21 @@ CREATE TABLE IF NOT EXISTS word_phrasal (
     word_id INTEGER NOT NULL, text TEXT NOT NULL,
     FOREIGN KEY (word_id) REFERENCES content(word_id)
 );
--- профиль/настройки пользователя (онбординг, уровень, цель)
+-- профиль/настройки пользователя (онбординг, уровень, цель, программа занятий)
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY, level TEXT, goal TEXT,
-    onboarded INTEGER NOT NULL DEFAULT 0, reminder_hour INTEGER, created_at TEXT
+    onboarded INTEGER NOT NULL DEFAULT 0, reminder_hour INTEGER, created_at TEXT,
+    program TEXT DEFAULT 'free',          -- free | cycle (программа дня)
+    -- часы слотов: МИНУТЫ от полуночи (540 = 9:00); схема v1, см. _migrate
+    remind_morning INTEGER DEFAULT 540, remind_day INTEGER DEFAULT 840,
+    remind_evening INTEGER DEFAULT 1140
 );
+-- след завершённых сессий (ИТОГ): нужен для карты дня (слот SCENARIO)
+CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+    ts TEXT NOT NULL, date TEXT NOT NULL, mode TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_sessions_user_date ON sessions(user_id, date);
 -- описания слоёв (reference): этимология корней и пояснения фреймов
 CREATE TABLE IF NOT EXISTS root_ref  (root TEXT PRIMARY KEY, idea TEXT, origin TEXT);
 CREATE TABLE IF NOT EXISTS frame_ref (name TEXT PRIMARY KEY, ru TEXT, when_use TEXT, example TEXT);
@@ -111,6 +121,34 @@ def _migrate(c):
     ucols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
     if ucols and "reminder_hour" not in ucols:
         c.execute("ALTER TABLE users ADD COLUMN reminder_hour INTEGER")
+    if ucols and "program" not in ucols:      # программа дня: free | cycle (+ часы слотов)
+        c.execute("ALTER TABLE users ADD COLUMN program TEXT DEFAULT 'free'")
+        c.execute("ALTER TABLE users ADD COLUMN remind_morning INTEGER DEFAULT 540")
+        c.execute("ALTER TABLE users ADD COLUMN remind_day INTEGER DEFAULT 840")
+        c.execute("ALTER TABLE users ADD COLUMN remind_evening INTEGER DEFAULT 1140")
+    if c.execute("PRAGMA user_version").fetchone()[0] < 1:
+        # v1: слоты перешли с часов на минуты от полуночи. Пересборка users нужна целиком:
+        # и данные (часы -> минуты), и ДЕФОЛТЫ колонок — ALTER-дефолты прошлой версии (9/14/19)
+        # иначе продолжили бы выдавать «часы» новым строкам. Старый формат мог хранить
+        # только целые часы 0–23, поэтому условие <24 безопасно.
+        c.execute("ALTER TABLE users RENAME TO users_v0")
+        c.execute("""CREATE TABLE users (
+            user_id INTEGER PRIMARY KEY, level TEXT, goal TEXT,
+            onboarded INTEGER NOT NULL DEFAULT 0, reminder_hour INTEGER, created_at TEXT,
+            program TEXT DEFAULT 'free',
+            remind_morning INTEGER DEFAULT 540, remind_day INTEGER DEFAULT 840,
+            remind_evening INTEGER DEFAULT 1140)""")
+        c.execute("""INSERT INTO users
+            SELECT user_id, level, goal, onboarded, reminder_hour, created_at, program,
+              CASE WHEN remind_morning IS NOT NULL AND remind_morning < 24
+                   THEN remind_morning*60 ELSE remind_morning END,
+              CASE WHEN remind_day IS NOT NULL AND remind_day < 24
+                   THEN remind_day*60 ELSE remind_day END,
+              CASE WHEN remind_evening IS NOT NULL AND remind_evening < 24
+                   THEN remind_evening*60 ELSE remind_evening END
+            FROM users_v0""")
+        c.execute("DROP TABLE users_v0")
+        c.execute("PRAGMA user_version = 1")
 
 def _index_word_links(c, word_id, family, collocations, phrasal):
     """Переиндексировать связи слова в реляционные таблицы. Идемпотентно по word_id."""
@@ -215,10 +253,80 @@ def get_reminder(user_id):
     return r["reminder_hour"] if r else None
 
 def reminder_users(hour):
-    """Кому слать напоминание в этот час."""
+    """Кому слать обычное напоминание в этот час (только free — cycle ходит по слотам)."""
     with _conn() as c:
         return [r["user_id"] for r in c.execute(
-            "SELECT user_id FROM users WHERE reminder_hour=?", (hour,)).fetchall()]
+            """SELECT user_id FROM users WHERE reminder_hour=?
+               AND (program IS NULL OR program<>'cycle')""", (hour,)).fetchall()]
+
+# ---------- программа дня (free | cycle) ----------
+
+_SLOT_COLS = {"morning": "remind_morning", "day": "remind_day", "evening": "remind_evening"}
+
+def get_program(user_id):
+    with _conn() as c:
+        r = c.execute("SELECT program FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return r["program"] if r and r["program"] else "free"
+
+def set_program(user_id, program):
+    with _conn() as c:
+        c.execute("""INSERT INTO users (user_id, program, created_at) VALUES (?,?,?)
+                     ON CONFLICT(user_id) DO UPDATE SET program=excluded.program""",
+                  (user_id, program, _today()))
+
+def get_slot_times(user_id):
+    """Времена слотов программы дня в МИНУТАХ от полуночи; дефолты 540/840/1140."""
+    with _conn() as c:
+        r = c.execute("""SELECT remind_morning, remind_day, remind_evening
+                         FROM users WHERE user_id=?""", (user_id,)).fetchone()
+    d = {"morning": 540, "day": 840, "evening": 1140}
+    if r:
+        for slot, col in _SLOT_COLS.items():
+            if r[col] is not None:
+                d[slot] = r[col]
+    return d
+
+def set_slot_time(user_id, slot, minutes):
+    """minutes — минуты от полуночи (0–1439)."""
+    col = _SLOT_COLS[slot]                    # только наши имена колонок, не ввод пользователя
+    with _conn() as c:
+        c.execute(f"""INSERT INTO users (user_id, {col}, created_at) VALUES (?,?,?)
+                      ON CONFLICT(user_id) DO UPDATE SET {col}=excluded.{col}""",
+                  (user_id, minutes, _today()))
+
+def slot_users(minute_of_day):
+    """Кому в эту минуту суток слотовое напоминание (program='cycle'): [(user_id, slot)],
+    slot ∈ new|review|scenario. Закрыт ли слот — решает вызывающий по day_map."""
+    out = []
+    with _conn() as c:
+        rows = c.execute("""SELECT user_id, remind_morning, remind_day, remind_evening
+                            FROM users WHERE program='cycle'""").fetchall()
+    for r in rows:
+        for slot, t in (("new", r["remind_morning"] if r["remind_morning"] is not None else 540),
+                        ("review", r["remind_day"] if r["remind_day"] is not None else 840),
+                        ("scenario", r["remind_evening"] if r["remind_evening"] is not None else 1140)):
+            if t == minute_of_day:
+                out.append((r["user_id"], slot))
+    return out
+
+def log_session(user_id, mode):
+    """След завершённой сессии (пишется при ИТОГе) — критерий слота SCENARIO."""
+    with _conn() as c:
+        c.execute("INSERT INTO sessions (user_id, ts, date, mode) VALUES (?,?,?,?)",
+                  (user_id, datetime.datetime.now().isoformat(), _today(), mode))
+
+def day_map(user_id, day=None):
+    """Карта дня: закрыты ли слоты. NEW — введены слова сегодня; REVIEW — было
+    повторение сегодня; SCENARIO — завершена сценарная сессия сегодня."""
+    day = day or _today()
+    with _conn() as c:
+        new = c.execute("SELECT 1 FROM state WHERE user_id=? AND promoted_at=? LIMIT 1",
+                        (user_id, day)).fetchone() is not None
+        rev = c.execute("SELECT 1 FROM reviews WHERE user_id=? AND ts LIKE ? LIMIT 1",
+                        (user_id, day + "%")).fetchone() is not None
+        scn = c.execute("""SELECT 1 FROM sessions WHERE user_id=? AND date=?
+                           AND mode='scenario' LIMIT 1""", (user_id, day)).fetchone() is not None
+    return {"new": new, "review": rev, "scenario": scn}
 
 # ---------- внутренняя «полоса комфорта» (НЕ показываем как уровень/статус) ----------
 _BANDS = ["A2", "B1", "B2"]

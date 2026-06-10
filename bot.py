@@ -15,7 +15,7 @@ English OS — каркас телеграм-бота.
 Что осознанно оставлено как TODO (помечено ниже):
     - парсинг свободного ввода «Учим X, Y» в режим+слова (или только кнопки)
 """
-import os, json, re, time, asyncio, datetime, logging, types
+import os, json, re, time, asyncio, datetime, logging, types, urllib.parse
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, BotCommand, BotCommandScopeChat)
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
@@ -140,9 +140,91 @@ async def _finish_session(ud, uid, send):
                   f"(✅ {r['ok']} / ❌ {r['fail']}), новых слов в очередь: {r['added']}"
                   f", структурных ошибок: {r.get('errors', 0)}")
     db.backup()
+    db.log_session(uid, ud.get("mode", "flow"))    # след сессии — для карты дня
     ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
+    hint = _next_slot_hint(uid)                    # после log_session: слот уже учтён
+    if hint:
+        reply += "\n\n" + hint
     for p in _chunks(reply):                       # отчёт может не влезть в одно сообщение
         await send(p)
+
+# ---------- программа дня: слоты, карта, подсказки ----------
+_SLOTS = [("new", "🌅", "Новые"), ("review", "☀️", "Повторить"), ("scenario", "🎭", "Сценарий")]
+
+# времена слотов: парсинг пользовательского ввода и формат показа (минуты от полуночи)
+_TIME_RE = re.compile(r"^([01]?\d|2[0-3])(?::([0-5]\d))?$")
+
+def _fmt_time(minutes):
+    return f"{minutes // 60}:{minutes % 60:02d}"
+
+def _parse_time(tok):
+    """«8» / «8:30» -> минуты от полуночи; None, если не время."""
+    m = _TIME_RE.match(tok or "")
+    return int(m.group(1)) * 60 + int(m.group(2) or 0) if m else None
+
+def _norm_tokens(text):
+    """Терпимость к форматам: запятые — разделители, точка между числами = двоеточие."""
+    return [t.replace(".", ":") for t in (text or "").replace(",", " ").split()]
+
+def _parse_slot_times(text):
+    """«9 14 19» / «8:30 13 19:15» / «9, 14, 19» -> [утро, день, вечер] в минутах; иначе None."""
+    toks = _norm_tokens(text)
+    if len(toks) != 3:
+        return None
+    times = [_parse_time(t) for t in toks]
+    return times if all(t is not None for t in times) else None
+
+def _handle_slot_input(ud, uid, text):
+    """Если ждали ввода часов слотов — попытаться применить. Возвращает текст ответа или None
+    (None = обработать сообщение обычным путём). Не застреваем: посторонний ввод снимает флаг;
+    похожая на время опечатка — подсказка, ожидание сохраняется."""
+    if not ud.pop("awaiting_slot_hours", False):
+        return None
+    times = _parse_slot_times(text)
+    if times:
+        for slot, t in zip(("morning", "day", "evening"), times):
+            db.set_slot_time(uid, slot, t)
+        return (f"Готово: 🌅 {_fmt_time(times[0])} · ☀️ {_fmt_time(times[1])} "
+                f"· 🎭 {_fmt_time(times[2])} ✅")
+    toks = _norm_tokens(text)
+    if len(toks) == 3 and any(_parse_time(t) is not None for t in toks):  # похоже на попытку
+        ud["awaiting_slot_hours"] = True
+        return ("Не понял время 🤔 Напиши три времени через пробел — утро, день, вечер.\n"
+                "Например: 9 14 19 или 8:30 13 19:15")
+    return None                               # кнопка/обычный текст — дальше обычным путём
+
+def _day_line(uid):
+    """Строка карты дня + подсказка следующего слота. None для program='free'."""
+    if db.get_program(uid) != "cycle":
+        return None
+    m = db.day_map(uid)
+    marks = " · ".join(f"{icon} {'✅' if m[key] else '—'}" for key, icon, _ in _SLOTS)
+    nxt = next((s for s in _SLOTS if not m[s[0]]), None)
+    hint = f"Следующий слот: {nxt[1]} {nxt[2]}" if nxt else "Все слоты на сегодня закрыты 🎉"
+    return f"Сегодня: {marks}\n{hint}"
+
+def _next_slot_hint(uid):
+    """Одна строка после завершения занятия: какой слот следующий. None для free."""
+    if db.get_program(uid) != "cycle":
+        return None
+    m = db.day_map(uid)
+    nxt = next((s for s in _SLOTS if not m[s[0]]), None)
+    return f"Дальше по программе: {nxt[1]} {nxt[2]}" if nxt else "Все слоты дня закрыты 🎉"
+
+def _slot_reminder_text(uid, slot):
+    """Текст слотового напоминания. None — молчим: слот уже закрыт или делать нечего."""
+    if db.day_map(uid).get(slot):
+        return None
+    if slot == "new":
+        if db.new_remaining(uid) == 0:
+            return None
+        return "🌅 Утренний слот: Новые слова — пара минут на разбор."
+    if slot == "review":
+        due, _ = db.due_today(uid)
+        if not due:
+            return None
+        return f"☀️ Дневной слот: Повторить — {len(due)} слов ждут."
+    return "🎭 Вечерний слот: Сценарий — разыграем рабочую ситуацию?"
 
 def _idle_users(user_data, now=None, idle_sec=IDLE_SUMMARY_SEC):
     """Кому пора авто-ИТОГ: есть несведённый диалог и тишина >= idle_sec."""
@@ -156,7 +238,8 @@ BTN_SCEN, BTN_READ = "🎭 Сценарий", "📖 Читать"
 BTN_END, BTN_PROG = "🏁 Итог", "📈 Прогресс"
 MAIN_KB = ReplyKeyboardMarkup(
     [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_END, BTN_PROG]],
-    resize_keyboard=True, is_persistent=True)
+    resize_keyboard=True, one_time_keyboard=True)   # всплывающая: после нажатия сворачивается,
+                                                    # возвращается значком ⌨ в строке ввода
 MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_PROG}  # BTN_END ловится END_WORDS
 
 async def _route_button(update, ctx, uid, label):
@@ -189,6 +272,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         lead = ("С возвращением! 👋\nВсё повторено, новых пока нет — поболтаем? "
                 "Просто пиши на английском, темы — /topics, чтение — 📖 Читать.")
+    day_line = _day_line(uid)                 # карта дня — только для программы 'cycle'
+    if day_line:
+        lead += "\n\n" + day_line
     await update.message.reply_text(
         lead + "\n\nКнопки управления — снизу 👇 Справка: /help", reply_markup=MAIN_KB)
 
@@ -225,6 +311,49 @@ async def on_pace(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Дальше я сам подстроюсь под тебя: пойдёт легко — добавлю посложнее; будет трудно — притормозим.\n"
         "Пиши «учим <слово>», говори голосом или жми 📖 Читать. Сменить темп — /pace.")
     await q.message.reply_text("Кнопки управления — снизу 👇 Справка: /help", reply_markup=MAIN_KB)
+    await q.message.reply_text(
+        "Как заниматься?\n"
+        "🗓 Программа дня — веду по циклу: утром Новые, днём Повторение, вечером Сценарий, "
+        "напоминаю только о незакрытых слотах.\n"
+        "🆓 Свободный режим — сам выбираешь, что и когда.\n"
+        "Любая кнопка работает всегда — программа лишь подсказывает порядок. Сменить: /program.",
+        reply_markup=_program_kb())
+
+# ---------- программа занятий: free | cycle ----------
+def _program_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗓 Программа дня: утро–день–вечер", callback_data="prog:cycle")],
+        [InlineKeyboardButton("🆓 Свободный режим", callback_data="prog:free")],
+    ])
+
+async def program_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/program — выбрать режим занятий в любой момент."""
+    cur = db.get_program(_learner(update))
+    label = "🗓 программа дня" if cur == "cycle" else "🆓 свободный"
+    await update.message.reply_text(
+        f"Сейчас: {label}. Как заниматься дальше?", reply_markup=_program_kb())
+
+async def on_program(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    prog = q.data.split(":")[1]
+    uid = _learner(update)
+    db.set_program(uid, prog)
+    if prog == "cycle":
+        t = db.get_slot_times(uid)
+        ctx.user_data["awaiting_slot_hours"] = True      # следующий текст — попытка задать часы
+        await q.edit_message_text(
+            "🗓 Программа дня включена.\n"
+            "Буду напоминать трижды в день: 🌅 утром Новые слова · ☀️ днём Повторение · "
+            "🎭 вечером Сценарий. Только если слот ещё не закрыт — позанимался раньше, промолчу.\n\n"
+            "Зададим удобные часы. Напиши три времени через пробел — утро, день, вечер. "
+            "Например: 9 14 19 (можно с минутами: 8:30 13 19:15).\n"
+            f"Сейчас стоят {_fmt_time(t['morning'])} / {_fmt_time(t['day'])} / {_fmt_time(t['evening'])}.\n\n"
+            "📅 А ещё можешь поставить ежедневное напоминание в свой календарь — кнопка ниже.",
+            reply_markup=_cal_kb())
+    else:
+        await q.edit_message_text(
+            "🆓 Свободный режим: занимайся, как удобно. Вернуть программу — /program.")
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/help — как пользоваться ботом (все ритуалы наглядно)."""
@@ -241,8 +370,9 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• просто пиши на английском — отвечу и мягко поправлю;\n"
         "• голосовые понимаю 🎤;\n"
         "• «учим invest, traction» — разберу эти слова;\n"
-        "• замолчишь на 25 минут — сам подведу итог сессии.\n\n"
-        "Команды: /topics темы · /mistakes мои ошибки · /pace темп · "
+        "• замолчишь на 25 минут — сам подведу итог сессии;\n"
+        "• кнопки прячутся после нажатия — вернуть их можно значком ⌨ в строке ввода.\n\n"
+        "Команды: /topics темы · /mistakes мои ошибки · /pace темп · /program программа дня · "
         "/remind напоминания · /add слова в очередь",
         reply_markup=MAIN_KB)
 
@@ -267,6 +397,7 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
     """Вход в режим. out(text, markup) — способ показа: edit (inline) или reply (клавиатура)."""
     ctx.user_data["mode"] = mode
     ctx.user_data["history"] = []
+    ctx.user_data.pop("awaiting_slot_hours", None)   # ушёл учиться — настройку часов отменяем
     db.ensure_user_state(uid)            # новый ученик / новые слова получают state
 
     if mode == "new":
@@ -327,6 +458,11 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _process_user_text(update, ctx, uid, text)
 
 async def _process_user_text(update, ctx, uid, text):
+    confirm = _handle_slot_input(ctx.user_data, uid, text)   # ждали часы слотов?
+    if confirm:
+        await update.message.reply_text(confirm)
+        return
+
     # завершение сессии: слово-триггер или кнопка «🏁 Итог»
     if text.strip().lower() in END_WORDS:
         await _typing(update.message)
@@ -551,10 +687,12 @@ async def _finish_review(q, ctx, uid):
     ok   = ctx.user_data.get("review_ok", 0)
     fail = ctx.user_data.get("review_fail", 0)
     db.backup()
+    hint = _next_slot_hint(uid)               # подсказка слота — только для программы 'cycle'
     await q.edit_message_text(
         f"🔁 Повторение завершено!\n\n"
         f"Карточек: {ok + fail}\n✅ Вспомнил: {ok}\n❌ Забыл: {fail}\n\n"
         f"Прогресс сохранён. /start — вернуться в меню."
+        + (f"\n{hint}" if hint else "")
     )
 
 # ---------- нажатия кнопок в карточках повторения ----------
@@ -817,18 +955,108 @@ async def add_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Готово: добавил {res['added']}, уже было {res['skipped']}, не вышло {res['failed']}.\n"
         f"Появятся в учёбе после подтверждения админом (/pending).")
 
+# ---------- календарь: ссылка-шаблон Google + .ics (без OAuth) ----------
+_CAL_TITLE = "English OS — 10 минут английского"
+_CAL_DETAILS = "Ежедневная тренировка с ботом English OS: повторение и новые слова."
+
+def _cal_times(hour, day):
+    start = f"{day:%Y%m%d}T{hour:02d}0000"
+    end = f"{day:%Y%m%d}T{hour:02d}1000"          # событие на 10 минут
+    return start, end
+
+def _gcal_link(hour, day):
+    """Ссылка-шаблон Google Calendar: открывает форму с готовым ежедневным событием."""
+    start, end = _cal_times(hour, day)
+    return "https://calendar.google.com/calendar/render?" + urllib.parse.urlencode({
+        "action": "TEMPLATE",
+        "text": _CAL_TITLE,
+        "details": _CAL_DETAILS,
+        "dates": f"{start}/{end}",
+        "recur": "RRULE:FREQ=DAILY",
+    })
+
+def _ics_event(hour, day):
+    """То же событие в iCalendar (.ics) — для Apple/Outlook/любого календаря. CRLF по стандарту."""
+    start, end = _cal_times(hour, day)
+    return "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//English OS//RU",
+        "BEGIN:VEVENT",
+        f"UID:english-os-daily-{hour}@english-os",
+        f"DTSTAMP:{start}",
+        f"DTSTART:{start}",
+        f"DTEND:{end}",
+        "RRULE:FREQ=DAILY",
+        f"SUMMARY:{_CAL_TITLE}",
+        f"DESCRIPTION:{_CAL_DETAILS}",
+        "END:VEVENT", "END:VCALENDAR", ""])
+
+def _cal_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📅 В календарь", callback_data="cal:add")]])
+
+async def on_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«📅 В календарь»: кнопка-ссылка Google Calendar + .ics-файл для остальных."""
+    q = update.callback_query
+    await q.answer()
+    hour = db.get_reminder(_learner(update))
+    if hour is None:
+        hour = 10
+    day = datetime.date.today()
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "Открыть Google Calendar", url=_gcal_link(hour, day))]])
+    await q.message.reply_text(
+        f"Ежедневное событие «{_CAL_TITLE}» в {hour}:00.\n"
+        "Google Calendar — по кнопке. Файл ниже — для любого другого календаря "
+        "(Apple, Outlook): просто открой его на телефоне.", reply_markup=kb)
+    await q.message.reply_document(
+        document=_ics_event(hour, day).encode("utf-8"),
+        filename="english_os_daily.ics")
+
 # ---------- ежедневные напоминания (лёгкий asyncio-цикл, без apscheduler) ----------
+_SLOT_WORDS = {"утро": "morning", "morning": "morning", "день": "day", "day": "day",
+               "вечер": "evening", "evening": "evening"}
+_SLOT_LABEL = {"morning": "🌅 утро", "day": "☀️ день", "evening": "🎭 вечер"}
+
 async def remind_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/remind 9 — напоминать в 9:00 · /remind off — выключить · без аргумента — статус."""
+    """/remind 9 — напоминать в 9:00 · /remind утро 8 — час слота (программа дня) ·
+    /remind off — выключить · без аргумента — статус."""
     uid = _learner(update)
     args = ctx.args or []
     if not args:
+        if db.get_program(uid) == "cycle":
+            t = db.get_slot_times(uid)
+            ctx.user_data["awaiting_slot_hours"] = True   # экран настроек — ждём три времени
+            await update.message.reply_text(
+                f"Слоты программы: 🌅 {_fmt_time(t['morning'])} · ☀️ {_fmt_time(t['day'])} "
+                f"· 🎭 {_fmt_time(t['evening'])}\n"
+                "Напоминаю только о незакрытых слотах.\n"
+                "Поменять — напиши три времени через пробел (утро, день, вечер): "
+                "9 14 19 или 8:30 13 19:15.",
+                reply_markup=_cal_kb())
+            return
         h = db.get_reminder(uid)
         status = f"в {h}:00" if h is not None else "выключены"
         await update.message.reply_text(
-            f"Напоминания: {status}. Поменять: /remind 9 · выключить: /remind off")
+            f"Напоминания: {status}. Поменять: /remind 9 · выключить: /remind off",
+            reply_markup=_cal_kb())
+        return
+    if args[0].lower() in _SLOT_WORDS:                  # /remind утро 8[:30] — путь продвинутых
+        slot = _SLOT_WORDS[args[0].lower()]
+        t = _parse_time(args[1]) if len(args) > 1 else None
+        if t is None:
+            await update.message.reply_text("Формат: /remind утро 8 или /remind утро 8:30")
+            return
+        db.set_slot_time(uid, slot, t)
+        await update.message.reply_text(
+            f"Готово — слот {_SLOT_LABEL[slot]} теперь в {_fmt_time(t)}.", reply_markup=_cal_kb())
         return
     a = args[0].lower()
+    if db.get_program(uid) == "cycle" and a not in ("off", "выкл", "stop", "0"):
+        # одиночное число при программе дня — не пишем мёртвый reminder_hour, ведём к слотам
+        ctx.user_data["awaiting_slot_hours"] = True
+        await update.message.reply_text(
+            "У тебя программа дня — напоминания идут по трём слотам.\n"
+            "Напиши три времени через пробел (утро, день, вечер): 9 14 19 или 8:30 13 19:15.")
+        return
     if a in ("off", "выкл", "stop", "0"):
         db.set_reminder(uid, None)
         await update.message.reply_text("Напоминания выключены.")
@@ -841,15 +1069,15 @@ async def remind_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Формат: /remind 9 (час 0–23) или /remind off")
         return
     db.set_reminder(uid, h)
-    await update.message.reply_text(f"Готово — напомню в {h}:00, если будут слова к повторению. ☀️")
+    await update.message.reply_text(
+        f"Готово — напомню в {h}:00, если будут слова к повторению. ☀️",
+        reply_markup=_cal_kb())
 
-async def _reminder_loop(app):
-    """Просыпается на каждом часе; шлёт «N к повторению» тем, у кого этот час задан и есть due."""
-    while True:
-        now = datetime.datetime.now()
-        await asyncio.sleep(max(60, 3600 - (now.minute * 60 + now.second)))
-        hour = datetime.datetime.now().hour
-        for uid in db.reminder_users(hour):
+async def _reminder_tick(app, minute_of_day):
+    """Один тик напоминаний. free — на круглом часе (как было); cycle — на точной минуте слота,
+    и только если слот ещё не закрыт (_slot_reminder_text)."""
+    if minute_of_day % 60 == 0:
+        for uid in db.reminder_users(minute_of_day // 60):   # free — как раньше
             due, _ = db.due_today(uid)
             if due:
                 try:
@@ -857,6 +1085,21 @@ async def _reminder_loop(app):
                         uid, f"☀️ {len(due)} слов ждут повторения сегодня. /start → Повторение.")
                 except Exception:
                     pass
+    for uid, slot in db.slot_users(minute_of_day):           # cycle — по слотам, поминутно
+        text = _slot_reminder_text(uid, slot)                # None — слот закрыт, молчим
+        if text:
+            try:
+                await app.bot.send_message(uid, text)
+            except Exception:
+                pass
+
+async def _reminder_loop(app):
+    """Минутный цикл: слоты программы дня задаются с точностью до минуты (8:30)."""
+    while True:
+        now = datetime.datetime.now()
+        await asyncio.sleep(max(1, 60 - now.second))
+        now = datetime.datetime.now()
+        await _reminder_tick(app, now.hour * 60 + now.minute)
 
 async def _idle_loop(app):
     """Раз в минуту: сессии с диалогом, молчащие IDLE_SUMMARY_SEC, сводим авто-ИТОГом."""
@@ -886,6 +1129,7 @@ async def _post_init(app):
         BotCommand("add", "добавить слова в учёбу"),
         BotCommand("topics", "учить слова по теме"),
         BotCommand("pace", "сменить темп / сложность"),
+        BotCommand("program", "программа занятий"),
         BotCommand("remind", "напоминания о повторении"),
     ]
     await app.bot.set_my_commands(learner)                       # по умолчанию — всем
@@ -917,6 +1161,7 @@ def main():
     app.add_handler(CommandHandler("progress", progress_cmd))
     app.add_handler(CommandHandler("remind", remind_cmd))
     app.add_handler(CommandHandler("pace", pace_cmd))
+    app.add_handler(CommandHandler("program", program_cmd))
     app.add_handler(CommandHandler("topics", topics_cmd))
     app.add_handler(CallbackQueryHandler(on_mode, pattern=r"^mode:"))
     app.add_handler(CallbackQueryHandler(on_review, pattern=r"^rev:"))
@@ -924,6 +1169,8 @@ def main():
     app.add_handler(CallbackQueryHandler(on_deep, pattern=r"^deep:"))
     app.add_handler(CallbackQueryHandler(on_branch, pattern=r"^branch:"))
     app.add_handler(CallbackQueryHandler(on_pace, pattern=r"^pace:"))
+    app.add_handler(CallbackQueryHandler(on_calendar, pattern=r"^cal:"))
+    app.add_handler(CallbackQueryHandler(on_program, pattern=r"^prog:"))
     app.add_handler(CallbackQueryHandler(on_topics, pattern=r"^topics$"))
     app.add_handler(CallbackQueryHandler(on_topax, pattern=r"^topax:"))
     app.add_handler(CallbackQueryHandler(on_topic, pattern=r"^topic:"))
