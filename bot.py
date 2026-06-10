@@ -16,7 +16,7 @@ English OS — каркас телеграм-бота.
     - парсинг свободного ввода «Учим X, Y» в режим+слова (или только кнопки)
 """
 import html as _htmlmod
-import os, json, re, shutil, time, asyncio, datetime, logging, types, urllib.parse, zlib
+import os, json, random, re, shutil, time, asyncio, datetime, logging, types, urllib.parse, zlib
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, ReplyKeyboardRemove,
                       BotCommand, BotCommandScopeChat)
@@ -825,6 +825,25 @@ def _network_block(word):
         lines.append(f"🧠 фрейм: {word['thinking_frame']}{extra}")
     return "\n".join(lines)
 
+# ---------- сборка SVOMPT (box 4): предложение из перемешанных слов ----------
+ASM_MIN, ASM_MAX = 4, 10    # пригодная длина примера в словах
+
+def _asm_tokens(example):
+    """Кусочки для конструктора. None — пример отсутствует или неудобной длины."""
+    toks = (example or "").split()
+    return toks if ASM_MIN <= len(toks) <= ASM_MAX else None
+
+def _asm_kb(order, used):
+    btns = [InlineKeyboardButton(t, callback_data=f"asm:{i}")
+            for i, t in enumerate(order) if i not in used]
+    return InlineKeyboardMarkup([btns[i:i + 3] for i in range(0, len(btns), 3)])
+
+def _asm_question(word, pos, total, picked):
+    head = f"🔁 Повторение · карточка {pos}/{total}"
+    built = f"\n👉 {' '.join(picked)}" if picked else ""
+    return (f"{head}\n\n🧩 Собери предложение со словом «{word['word']}» ({word['ru']}) — "
+            f"тапай слова по порядку. Помни шаблон SVOMPT!{built}")
+
 def _cloze_for(word):
     """Коллокация с пропуском целевого слова — для cloze-карточки box 2.
     None — у слова нет коллокации, содержащей его само (фолбэк в узнавание)."""
@@ -870,6 +889,13 @@ def _card_payload(ctx, uid, reveal=False):
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
     productive = box >= db.PRODUCTIVE_FROM_BOX  # зрелое слово -> RU→EN; иначе EN→RU
     ctx.user_data["review_reveal"] = reveal
+    if not reveal and box == 4:                 # box 4: сборка SVOMPT (объективная проверка)
+        toks = _asm_tokens(word.get("example"))
+        if toks:
+            order = random.sample(toks, len(toks))
+            ctx.user_data.update(asm_target=toks, asm_order=order, asm_used=[],
+                                 asm_picked=[], asm_errors=0, asm_wid=wid)
+            return (_asm_question(word, pos + 1, len(queue), []), _asm_kb(order, []))
     return (_review_card_text(word, pos + 1, len(queue), reveal, productive,
                               _variant(uid, wid), box=box),
             _review_kb(reveal))
@@ -918,16 +944,69 @@ async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     word_id = queue[pos]
     remembered = (action == "ok")
     ms = ctx.user_data.pop("card_ms", None)
-    db.review(word_id, remembered, uid, variant=_variant(uid, word_id), ms=ms)  # ← цикл + A/B
-    db.adapt_band(uid)                          # тихо подстраиваем полосу по последним повторениям
+    await _record_review(ctx, uid, word_id, remembered, ms)
+    await _next_card(q, ctx, uid)
+
+async def _record_review(ctx, uid, word_id, remembered, ms):
+    """Записать результат карточки (SRS + A/B + полоса + счётчики сессии)."""
+    db.review(word_id, remembered, uid, variant=_variant(uid, word_id), ms=ms)
+    db.adapt_band(uid)                          # тихо подстраиваем полосу
     key = "review_ok" if remembered else "review_fail"
     ctx.user_data[key] = ctx.user_data.get(key, 0) + 1
 
-    ctx.user_data["review_pos"] = pos + 1   # перейти к следующей карточке
-    if ctx.user_data["review_pos"] >= len(queue):
+async def _next_card(q, ctx, uid):
+    """Сдвинуть колоду: следующая карточка или финал."""
+    ctx.user_data["review_pos"] = ctx.user_data.get("review_pos", 0) + 1
+    if ctx.user_data["review_pos"] >= len(ctx.user_data.get("review_queue", [])):
         await _finish_review(q, ctx, uid)
     else:
         await _show_card(q, ctx, uid, reveal=False)
+
+async def on_assembly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Конструктор SVOMPT (box 4): тапы по словам, результат — объективный (по ошибкам)."""
+    q = update.callback_query
+    uid = _learner(update)
+    ud = ctx.user_data
+    arg = q.data.split(":", 1)[1]
+    if arg == "next":                          # с экрана результата — дальше по колоде
+        await q.answer()
+        await _next_card(q, ctx, uid)
+        return
+    order, target = ud.get("asm_order"), ud.get("asm_target")
+    if not order or not target:
+        await q.answer("Карточка устарела — нажми ☀️ Повторить", show_alert=True)
+        return
+    i = int(arg)
+    if i in ud.get("asm_used", []) or i >= len(order):
+        await q.answer()
+        return
+    if order[i] != target[len(ud["asm_picked"])]:
+        ud["asm_errors"] = ud.get("asm_errors", 0) + 1
+        await q.answer("Не это слово 🙂 Вспомни порядок SVOMPT")
+        return
+    await q.answer()
+    ud["asm_used"].append(i)
+    ud["asm_picked"].append(order[i])
+    word = db.get_word(ud["asm_wid"])
+    pos, total = ud.get("review_pos", 0), len(ud.get("review_queue", []))
+    if len(ud["asm_picked"]) < len(target):    # собираем дальше
+        await q.edit_message_text(_asm_question(word, pos + 1, total, ud["asm_picked"]),
+                                  reply_markup=_asm_kb(order, ud["asm_used"]))
+        return
+    # собрано: объективный зачёт, экран результата (+ сеть для layered), кнопка «Дальше»
+    ok = ud.get("asm_errors", 0) == 0
+    shown = ud.get("card_shown_at")
+    ms = int((time.time() - shown) * 1000) if shown else None
+    await _record_review(ctx, uid, ud["asm_wid"], ok, ms)
+    verdict = "✅ Собрано без ошибок!" if ok else f"⚠️ Собрано, но ошибок: {ud['asm_errors']}"
+    block = ("\n" + _network_block(word)) if _variant(uid, ud["asm_wid"]) == "layered" else ""
+    sentence = " ".join(target)
+    for k in ("asm_target", "asm_order", "asm_used", "asm_picked", "asm_errors", "asm_wid"):
+        ud.pop(k, None)
+    await q.edit_message_text(
+        f"🧩 {sentence}\n{verdict}{block}",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("▶ Дальше", callback_data="asm:next")]]))
 
 # ---------- очередь новых слов на подтверждение (pending) ----------
 def _pending_card_text(item):
@@ -1581,6 +1660,7 @@ def main():
     app.add_handler(CommandHandler("topics", topics_cmd))
     app.add_handler(CallbackQueryHandler(on_mode, pattern=r"^mode:"))
     app.add_handler(CallbackQueryHandler(on_review, pattern=r"^rev:"))
+    app.add_handler(CallbackQueryHandler(on_assembly, pattern=r"^asm:"))
     app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
     app.add_handler(CallbackQueryHandler(on_deep, pattern=r"^deep:"))
     app.add_handler(CallbackQueryHandler(on_branch, pattern=r"^branch:"))
