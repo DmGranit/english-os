@@ -130,6 +130,53 @@ def test_summary_errors_logged_and_category_sanitized(fresh_db):
     assert pats == {"word_order": 1, "other": 1}            # мусорная категория -> other
 
 
+# ---------- направление повторения в журнале + полоса по направлениям ----------
+
+def _insert_reviews(db_, direction, results):
+    with db_._conn() as c:
+        for ok in results:
+            c.execute("""INSERT INTO reviews (user_id, word_id, ts, remembered, direction)
+                         VALUES (?,?,?,?,?)""",
+                      (UID, 1, "2026-06-10T00:00:00", int(ok), direction))
+
+
+def test_review_stores_direction(fresh_db):
+    fresh_db.start_learning([1], UID)
+    fresh_db.review(1, True, UID)              # box 1 -> recog (EN→RU)
+    fresh_db.review(1, True, UID)              # box 2 -> recog
+    fresh_db.review(1, True, UID)              # box 3 -> prod (RU→EN)
+    with fresh_db._conn() as c:
+        dirs = [r["direction"] for r in c.execute(
+            "SELECT direction FROM reviews WHERE user_id=? ORDER BY id", (UID,))]
+    assert dirs == ["recog", "recog", "prod"]
+
+
+def test_adapt_band_up_needs_all_directions_strong(fresh_db):
+    fresh_db.set_band(UID, "A2")
+    _insert_reviews(fresh_db, "recog", [True] * 12)
+    _insert_reviews(fresh_db, "prod", [True] * 11 + [False])   # ~0.92
+    assert fresh_db.adapt_band(UID) == "B1"
+
+
+def test_adapt_band_down_when_one_direction_weak(fresh_db):
+    fresh_db.set_band(UID, "B1")
+    _insert_reviews(fresh_db, "recog", [True] * 12)            # 1.0 — но prod проседает
+    _insert_reviews(fresh_db, "prod", [True] * 5 + [False] * 7)
+    assert fresh_db.adapt_band(UID) == "A2"
+
+
+def test_adapt_band_single_direction_with_full_window_enough(fresh_db):
+    fresh_db.set_band(UID, "A2")
+    _insert_reviews(fresh_db, "recog", [True] * 12)            # prod данных нет — не участвует
+    assert fresh_db.adapt_band(UID) == "B1"
+
+
+def test_adapt_band_partial_window_no_move(fresh_db):
+    fresh_db.set_band(UID, "A2")
+    _insert_reviews(fresh_db, "recog", [True] * 11)            # окно не набрано
+    assert fresh_db.adapt_band(UID) is None
+
+
 # ---------- темы: скрытие пустых сценариев ----------
 
 def test_scenario_list_hides_small_topics(fresh_db):

@@ -1,6 +1,7 @@
 # данные и генерируемое (не версионируем)
 *.db
 backups/
+bot_state.pickle
 __pycache__/
 *.pyc
 

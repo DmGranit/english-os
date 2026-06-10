@@ -20,7 +20,7 @@ from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, BotCommand, BotCommandScopeChat)
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                           MessageHandler, TypeHandler, ApplicationHandlerStop,
-                          ContextTypes, filters)
+                          ContextTypes, PicklePersistence, filters)
 import db, prompts, llm, enrich
 
 log = logging.getLogger("english_os")
@@ -42,9 +42,13 @@ def _learner(update):
     """Telegram-id пользователя: у каждого свой прогресс (общий только контент)."""
     return update.effective_user.id
 
-# режим и история диалога живут в context.user_data (на сессию)
+# режим и история диалога живут в context.user_data; PicklePersistence переживает рестарт
 MAX_HISTORY = 20    # держим последние 20 сообщений (~10 обменов) — чтобы контекст не рос без предела
-PRODUCTIVE_FROM_BOX = 3   # box 1–2: спрашиваем EN→RU (узнавание); box 3+: RU→EN (продукция)
+
+def _persistence(path=None):
+    """Хранилище сессий: режим, история и last_seen переживают рестарт бота."""
+    return PicklePersistence(
+        filepath=path or os.environ.get("ENGLISH_OS_STATE", "bot_state.pickle"))
 
 def _mode(ctx):     return ctx.user_data.get("mode", "flow")
 def _history(ctx):  return ctx.user_data.setdefault("history", [])
@@ -53,6 +57,46 @@ def _remember(hist, role, content):
     """Добавить сообщение и оставить только последние MAX_HISTORY (свежий хвост)."""
     hist.append({"role": role, "content": content})
     hist[:] = hist[-MAX_HISTORY:]     # [-MAX_HISTORY:] = последние N; старые отбрасываются
+    while hist and hist[0]["role"] == "assistant":   # Anthropic требует первым ход user
+        hist.pop(0)
+
+# ---------- лимит Telegram: одно сообщение <= 4096 символов ----------
+TG_LIMIT = 4096
+
+def _chunks(text, limit=TG_LIMIT):
+    """Разрезать текст под лимит: по строкам/абзацам; жёсткий срез — только если
+    одна строка сама длиннее лимита. «\\n».join(parts) восстанавливает текст."""
+    text = text or ""
+    if len(text) <= limit:
+        return [text]
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        if cur and len(cur) + 1 + len(line) > limit:
+            parts.append(cur)
+            cur = ""
+        while len(line) > limit:                  # строка-монстр — режем жёстко
+            if cur:
+                parts.append(cur); cur = ""
+            parts.append(line[:limit]); line = line[limit:]
+        cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        parts.append(cur)
+    return parts
+
+async def _say(msg, text, markup=None):
+    """reply_text с разрезанием под лимит; клавиатура — на последней части."""
+    parts = _chunks(text)
+    for p in parts[:-1]:
+        await msg.reply_text(p)
+    return await msg.reply_text(parts[-1], reply_markup=markup)
+
+async def _deliver(out, text, markup=None):
+    """Показать длинный текст: первая часть через out (edit или reply), хвост — реплаями."""
+    parts = _chunks(text)
+    m = await out(parts[0], markup if len(parts) == 1 else None)
+    for k, p in enumerate(parts[1:], start=2):
+        m = await m.reply_text(p, reply_markup=markup if k == len(parts) else None)
+    return m
 
 # машинный блок ```json {...}``` в конце ответа модели (контракт ИТОГ)
 _JSON_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -97,7 +141,8 @@ async def _finish_session(ud, uid, send):
                   f", структурных ошибок: {r.get('errors', 0)}")
     db.backup()
     ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
-    await send(reply)
+    for p in _chunks(reply):                       # отчёт может не влезть в одно сообщение
+        await send(p)
 
 def _idle_users(user_data, now=None, idle_sec=IDLE_SUMMARY_SEC):
     """Кому пора авто-ИТОГ: есть несведённый диалог и тишина >= idle_sec."""
@@ -299,7 +344,7 @@ async def _process_user_text(update, ctx, uid, text):
         return
 
     reply = await _call(ctx, _mode(ctx), uid, text)
-    await update.message.reply_text(reply)
+    await _say(update.message, reply)
 
 # ---------- роутинг намерения «учим X» ----------
 _LEARN_RE = re.compile(
@@ -344,7 +389,7 @@ async def _deliver_lesson(msg, ctx, uid, wd):
     system = prompts.assemble("new") + "\n\n" + db.learner_profile(uid)
     await _typing(msg)
     reply = await asyncio.to_thread(llm.chat, system, [{"role": "user", "content": seed}])
-    await msg.reply_text(reply, reply_markup=_deep_kb(wd))
+    await _say(msg, reply, _deep_kb(wd))
 
 async def _teach_words(update, ctx, uid, words):
     """Слова из базы — разбор NEW + ввод в SRS + кнопки «Глубже»; новых — в очередь enrich/pending."""
@@ -429,7 +474,7 @@ async def _ask(out, ctx, mode, seed_text, uid, markup=None, tmsg=None):
         await _typing(tmsg)
     reply = await asyncio.to_thread(llm.chat, system, hist)
     _remember(hist, "assistant", reply)
-    await out(reply, markup)
+    await _deliver(out, reply, markup)
 
 # ---------- режим повторения: карточки ----------
 def _review_kb(reveal):
@@ -489,7 +534,7 @@ def _card_payload(ctx, reveal=False):
     wid = queue[pos]
     word = db.get_word(wid)
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
-    productive = box >= PRODUCTIVE_FROM_BOX     # зрелое слово -> RU→EN; иначе EN→RU
+    productive = box >= db.PRODUCTIVE_FROM_BOX  # зрелое слово -> RU→EN; иначе EN→RU
     ctx.user_data["review_reveal"] = reveal
     return (_review_card_text(word, pos + 1, len(queue), reveal, productive, _variant(wid)),
             _review_kb(reveal))
@@ -653,7 +698,7 @@ async def read_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"ИЗВЕСТНЫЕ ученику слова — опирайся на них (~98% текста):\n{base_list}")
     await _typing(update.message)
     text = await asyncio.to_thread(llm.chat, prompts.assemble("input"), [{"role": "user", "content": seed}])
-    await update.message.reply_text(text)
+    await _say(update.message, text)
 
 # ---------- движок структурных ошибок: /mistakes ----------
 _CAT_RU = {"word_order": "порядок слов", "article": "артикли", "preposition": "предлоги",
@@ -821,11 +866,12 @@ async def _idle_loop(app):
             ud = app.user_data[uid]
 
             async def send(text, _uid=uid):
-                await app.bot.send_message(
-                    _uid, "🕐 Тишина 25 минут — подвожу итог сессии.\n\n" + text)
+                await app.bot.send_message(_uid, text)
 
             try:
+                await app.bot.send_message(uid, "🕐 Тишина 25 минут — подвожу итог сессии.")
                 await _finish_session(ud, uid, send)
+                app.mark_data_for_update_persistence(user_ids=uid)   # правка вне хэндлера
             except Exception:
                 log.exception("auto-summary failed for user=%s", uid)
 
@@ -855,7 +901,9 @@ async def _post_init(app):
 def main():
     if not TOKEN:
         raise SystemExit("Задай TELEGRAM_TOKEN")
-    app = Application.builder().token(TOKEN).post_init(_post_init).build()
+    app = (Application.builder().token(TOKEN)
+           .persistence(_persistence())          # сессии переживают рестарт
+           .post_init(_post_init).build())
     app.add_handler(TypeHandler(Update, _guard), group=-1)   # вахтёр: проверяется первым
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))

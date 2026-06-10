@@ -15,6 +15,7 @@ DB_PATH = os.environ.get("ENGLISH_OS_DB", "english_os.db")
 DEFAULT_USER = 1                      # пока один пользователь; user_id заложен на вырост
 DAILY_NEW_CAP = int(os.environ.get("NEW_CAP", "7"))   # дневная норма новых слов (настраивается NEW_CAP)
 INTERVALS = {1: 1, 2: 3, 3: 7, 4: 14, 5: 30}   # Лейтнер, как в исходном файле
+PRODUCTIVE_FROM_BOX = 3   # box 1–2: узнавание EN→RU (recog); box 3+: продукция RU→EN (prod)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS content (
@@ -105,6 +106,8 @@ def _migrate(c):
         c.execute("ALTER TABLE reviews ADD COLUMN variant TEXT")
     if "ms" not in cols:                      # время ответа (time-on-task), мс
         c.execute("ALTER TABLE reviews ADD COLUMN ms INTEGER")
+    if "direction" not in cols:               # направление карточки: recog (EN→RU) | prod (RU→EN)
+        c.execute("ALTER TABLE reviews ADD COLUMN direction TEXT")
     ucols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
     if ucols and "reminder_hour" not in ucols:
         c.execute("ALTER TABLE users ADD COLUMN reminder_hour INTEGER")
@@ -232,19 +235,25 @@ def set_band(user_id, band):
                   (user_id, band, _today()))
 
 def adapt_band(user_id, window=12):
-    """Тихо двигаем полосу по последним повторениям: высокий успех -> сложнее, низкий -> проще.
+    """Тихо двигаем полосу по последним повторениям, РАЗДЕЛЬНО по направлениям
+    (recog EN→RU легче, prod RU→EN труднее — общее окно дёргало полосу от состава колоды).
+    Участвуют направления, набравшие полное окно; вверх — ВСЕ такие >= 0.85, вниз — ЛЮБОЕ < 0.5.
     Пользователю уровень НЕ показываем. Возвращает новую полосу, если сдвинули, иначе None."""
+    rates = []
     with _conn() as c:
-        rows = c.execute("SELECT remembered FROM reviews WHERE user_id=? ORDER BY id DESC LIMIT ?",
-                         (user_id, window)).fetchall()
-    if len(rows) < window:
+        for d in ("recog", "prod"):
+            rows = c.execute("""SELECT remembered FROM reviews
+                                WHERE user_id=? AND direction=? ORDER BY id DESC LIMIT ?""",
+                             (user_id, d, window)).fetchall()
+            if len(rows) == window:
+                rates.append(sum(r["remembered"] for r in rows) / window)
+    if not rates:
         return None
-    rate = sum(r["remembered"] for r in rows) / len(rows)
     cur = get_band(user_id)
     i = _BANDS.index(cur) if cur in _BANDS else 0
-    if rate >= 0.85 and i < len(_BANDS) - 1:
+    if all(r >= 0.85 for r in rates) and i < len(_BANDS) - 1:
         set_band(user_id, _BANDS[i + 1]); return _BANDS[i + 1]
-    if rate < 0.5 and i > 0:
+    if any(r < 0.5 for r in rates) and i > 0:
         set_band(user_id, _BANDS[i - 1]); return _BANDS[i - 1]
     return None
 
@@ -560,6 +569,7 @@ def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None):
         if r is None:
             raise ValueError(f"нет state для word_id={word_id}")
         box = r["box"] or 1
+        direction = "prod" if box >= PRODUCTIVE_FROM_BOX else "recog"   # по box ДО обновления
         if remembered:
             box = min(box + 1, 5)
             status = "known" if box == 5 else "learning"
@@ -570,10 +580,10 @@ def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None):
         c.execute("""UPDATE state SET box=?, status=?, last_review=?, next_review=?
                      WHERE user_id=? AND word_id=?""",
                   (box, status, today, nxt, user_id, word_id))
-        c.execute("""INSERT INTO reviews (user_id, word_id, ts, remembered, variant, ms)
-                     VALUES (?,?,?,?,?,?)""",
+        c.execute("""INSERT INTO reviews (user_id, word_id, ts, remembered, variant, ms, direction)
+                     VALUES (?,?,?,?,?,?,?)""",
                   (user_id, word_id, datetime.datetime.now().isoformat(),
-                   int(remembered), variant, ms))
+                   int(remembered), variant, ms, direction))
     return {"word_id": word_id, "box": box, "status": status, "next_review": nxt}
 
 def variant_stats(user_id=DEFAULT_USER):
