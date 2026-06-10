@@ -22,9 +22,28 @@ from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                           MessageHandler, TypeHandler, ApplicationHandlerStop,
                           ContextTypes, PicklePersistence, filters)
-import db, prompts, llm, enrich
+import db, prompts, llm, enrich, selfcheck
 
 log = logging.getLogger("english_os")
+_STARTED = time.time()    # для аптайма в /health
+
+# лимиты трат (настраиваются env): защита кошелька при тест-эксплуатации
+LLM_HOURLY_CAP = int(os.environ.get("LLM_HOURLY_CAP", "40"))   # LLM-вызовов в час на человека
+VOICE_MAX_SEC = int(os.environ.get("VOICE_MAX_SEC", "60"))     # секунд на ОДНО голосовое
+TEXT_MAX_LEN = int(os.environ.get("TEXT_MAX_LEN", "2000"))     # символов на одно сообщение
+COOLDOWN_MSG = ("☕ Передохнём пару минут — за последний час было много запросов. "
+                "Карточки ☀️ Повторить работают без ограничений!")
+
+def _rate_ok(ud, now=None):
+    """Лимитер: не больше LLM_HOURLY_CAP вызовов модели в час на пользователя.
+    Скользящее окно в user_data (переживает рестарт через персистентность)."""
+    now = time.time() if now is None else now
+    calls = [t for t in ud.get("llm_calls", []) if now - t < 3600]
+    allowed = len(calls) < LLM_HOURLY_CAP
+    if allowed:
+        calls.append(now)
+    ud["llm_calls"] = calls
+    return allowed
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CONTENT_USER = db.DEFAULT_USER   # общий пул контента и очереди pending (его наполняют seed.py/enrich.py)
@@ -479,6 +498,15 @@ def _stt_hints(ctx, uid):
 async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Голосовое: скачать -> распознать речь -> дальше как обычный текст."""
     uid = _learner(update)
+    dur = getattr(update.message.voice, "duration", 0) or 0
+    if dur > VOICE_MAX_SEC:                      # лимит на ОДНО сообщение (Whisper поминутный)
+        await update.message.reply_text(
+            f"🎤 Голосовое длинновато ({dur} сек, максимум {VOICE_MAX_SEC}). "
+            "Скажи покороче — диалог живее репликами 🙂")
+        return
+    if not _rate_ok(ctx.user_data):
+        await update.message.reply_text(COOLDOWN_MSG)
+        return
     try:
         f = await update.message.voice.get_file()
         buf = await f.download_as_bytearray()
@@ -507,6 +535,15 @@ async def _process_user_text(update, ctx, uid, text):
 
     if text in MAIN_BUTTONS:                     # постоянная клавиатура
         await _route_button(update, ctx, uid, text)
+        return
+
+    if len(text) > TEXT_MAX_LEN:                 # кап входа: токены модели не резиновые
+        await update.message.reply_text(
+            f"✂️ Слишком длинное сообщение ({len(text)} символов, максимум {TEXT_MAX_LEN}). "
+            "Сократи или разбей на части.")
+        return
+    if not _rate_ok(ctx.user_data):
+        await update.message.reply_text(COOLDOWN_MSG)
         return
 
     await _typing(update.message)                 # «печатает…», пока ИИ думает
@@ -933,6 +970,81 @@ async def abstats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append("\n⚠️ Это направленный сигнал. Для вывода нужна когорта, не n=1.")
     await update.message.reply_text("\n".join(lines))
 
+# ---------- надёжность: фидбек, селфчек, журнал ошибок ----------
+async def feedback_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/feedback <текст> — сообщение о проблеме/идее: в журнал + карточка владельцу."""
+    text = " ".join(ctx.args or []).strip()
+    if not text:
+        await update.message.reply_text(
+            "Напиши после команды, что не так или чего не хватает:\n"
+            "/feedback карточки повторяются слишком часто")
+        return
+    uid = _learner(update)
+    db.log_tech(uid, "feedback", text)
+    if OWNER_ID and uid != OWNER_ID:
+        try:
+            await ctx.bot.send_message(OWNER_ID, f"🐞 Фидбек от {uid}: {text}")
+        except Exception:
+            log.exception("feedback notify failed")
+    await update.message.reply_text("Спасибо! Записал и передал 🙏")
+
+async def health_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/health — селфчек системы (владелец)."""
+    if OWNER_ID and _learner(update) != OWNER_ID:
+        await update.message.reply_text("Селфчек — только у администратора.")
+        return
+    lines = ["🩺 Селфчек:"]
+    for name, ok_, detail in selfcheck.checks():
+        lines.append(f"{'✅' if ok_ else '❌'} {name}: {detail}")
+    try:
+        me = await ctx.bot.get_me()
+        lines.append(f"✅ telegram: @{me.username}")
+    except Exception as e:
+        lines.append(f"❌ telegram: {e}")
+    up = int(time.time() - _STARTED)
+    lines.append(f"⏱ аптайм: {up // 3600}ч {(up % 3600) // 60}м")
+    await update.message.reply_text("\n".join(lines))
+
+async def issues_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/issues — последние ошибки и фидбек (владелец): готовый список для правок."""
+    if OWNER_ID and _learner(update) != OWNER_ID:
+        await update.message.reply_text("Журнал — только у администратора.")
+        return
+    rows = db.recent_tech(limit=10)
+    if not rows:
+        await update.message.reply_text("Журнал пуст ✅ — ни ошибок, ни жалоб.")
+        return
+    lines = ["🛠 Последние ошибки и фидбек:\n"]
+    for r in rows:
+        mark = "🐞" if r["kind"] == "feedback" else "💥"
+        lines.append(f"{mark} [{r['ts'][:16]}] u{r['user_id'] or '?'}: {r['summary']}")
+    await _say(update.message, "\n".join(lines))
+
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    """Глобальный обработчик: пользователю — мягко, владельцу — карточка, в журнал — трейс."""
+    import traceback
+    err = ctx.error
+    trace = "".join(traceback.format_exception(None, err, getattr(err, "__traceback__", None)))
+    user = getattr(update, "effective_user", None)
+    uid = getattr(user, "id", None)
+    log.error("handler error (user=%s): %s\n%s", uid, err, trace[-1500:])
+    try:
+        db.log_tech(uid, "error", repr(err), trace[-3000:])
+    except Exception:
+        log.exception("log_tech failed")
+    if OWNER_ID:
+        try:
+            await ctx.bot.send_message(
+                OWNER_ID, f"💥 Ошибка у u{uid or '?'}: {repr(err)[:200]}\n…{trace[-500:]}")
+        except Exception:
+            pass
+    msg = getattr(update, "effective_message", None)
+    if msg is not None:
+        try:
+            await msg.reply_text("⚙️ Что-то пошло не так — я записал и разберусь. Попробуй ещё раз.")
+        except Exception:
+            pass
+
 # ---------- неподдерживаемые типы (голос/фото и т.п.) ----------
 async def on_unsupported(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Бот понимает только текст. На голос/фото — вежливая подсказка вместо тишины."""
@@ -1277,13 +1389,16 @@ async def _post_init(app):
         BotCommand("pace", "сменить темп / сложность"),
         BotCommand("program", "программа занятий"),
         BotCommand("remind", "напоминания о повторении"),
+        BotCommand("feedback", "сообщить о проблеме"),
     ]
     await app.bot.set_my_commands(learner)                       # по умолчанию — всем
     if OWNER_ID:                                                 # владельцу — плюс админское
         await app.bot.set_my_commands(
             learner + [BotCommand("pending", "очередь новых слов (админ)"),
                        BotCommand("fill", "наполнить сценарий словами (админ)"),
-                       BotCommand("users", "пользователи и заявки (админ)")],
+                       BotCommand("users", "пользователи и заявки (админ)"),
+                       BotCommand("health", "селфчек системы (админ)"),
+                       BotCommand("issues", "ошибки и фидбек (админ)")],
             scope=BotCommandScopeChat(chat_id=OWNER_ID))
     global _REMINDER_TASK, _IDLE_TASK
     _REMINDER_TASK = asyncio.create_task(_reminder_loop(app))   # ссылка в глобале -> не соберётся GC
@@ -1294,6 +1409,12 @@ def main():
         raise SystemExit("Задай TELEGRAM_TOKEN")
     db.init_db()    # схема + миграции при каждом старте (идемпотентно) — не руками
     db.ensure_roles(OWNER_ID, ALLOWED_USERS)   # env-список -> роли (бесшовный переход)
+    from logging.handlers import RotatingFileHandler
+    fh = RotatingFileHandler("bot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(fh)         # история ошибок переживает рестарты
+    for name, ok_, detail in selfcheck.checks():   # селфчек на старте: проблемы — громко
+        (log.info if ok_ else log.error)("selfcheck %s: %s", name, detail)
     app = (Application.builder().token(TOKEN)
            .persistence(_persistence())          # сессии переживают рестарт
            .post_init(_post_init).build())
@@ -1303,6 +1424,10 @@ def main():
     app.add_handler(CommandHandler("pending", pending_cmd))
     app.add_handler(CommandHandler("fill", fill_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CommandHandler("feedback", feedback_cmd))
+    app.add_handler(CommandHandler("health", health_cmd))
+    app.add_handler(CommandHandler("issues", issues_cmd))
+    app.add_error_handler(on_error)            # ни одно падение не уходит молча
     app.add_handler(CallbackQueryHandler(on_access, pattern=r"^acc:"))
     app.add_handler(CommandHandler("mistakes", mistakes_cmd))
     app.add_handler(CommandHandler("read", read_cmd))

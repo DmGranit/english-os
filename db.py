@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     ts TEXT NOT NULL, date TEXT NOT NULL, mode TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_user_date ON sessions(user_id, date);
+-- технический журнал: ошибки хэндлеров и фидбек тестеров (для следующих правок)
+CREATE TABLE IF NOT EXISTS tech_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,
+    user_id INTEGER, kind TEXT NOT NULL,   -- error | feedback
+    summary TEXT, trace TEXT
+);
 -- описания слоёв (reference): этимология корней и пояснения фреймов
 CREATE TABLE IF NOT EXISTS root_ref  (root TEXT PRIMARY KEY, idea TEXT, origin TEXT);
 CREATE TABLE IF NOT EXISTS frame_ref (name TEXT PRIMARY KEY, ru TEXT, when_use TEXT, example TEXT);
@@ -1027,6 +1033,31 @@ def learner_profile(user_id=DEFAULT_USER, focus_n=5):
         parts.append("частые ошибки: " + ", ".join(f"{_CAT_RU.get(c, c)} ({n}×)" for c, n in errs))
     return ("ПРОФИЛЬ УЧЕНИКА (факты из базы — опирайся на них, прошлое не выдумывай): "
             + "; ".join(parts) + ".")
+
+# ---------- технический журнал (ошибки хэндлеров + фидбек) ----------
+
+def log_tech(user_id, kind, summary, trace=None):
+    """Записать техническую ошибку или фидбек тестера."""
+    with _conn() as c:
+        c.execute("INSERT INTO tech_errors (ts, user_id, kind, summary, trace) VALUES (?,?,?,?,?)",
+                  (datetime.datetime.now().isoformat(), user_id, kind,
+                   (summary or "")[:500], trace))
+
+def recent_tech(kind=None, limit=10):
+    """Последние записи журнала (свежие первыми); kind фильтрует error/feedback."""
+    with _conn() as c:
+        if kind:
+            rows = c.execute("""SELECT * FROM tech_errors WHERE kind=?
+                                ORDER BY id DESC LIMIT ?""", (kind, limit)).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM tech_errors ORDER BY id DESC LIMIT ?",
+                             (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+def tech_count_24h():
+    since = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
+    with _conn() as c:
+        return c.execute("SELECT COUNT(*) FROM tech_errors WHERE ts>=?", (since,)).fetchone()[0]
 
 # ---------- сервис ----------
 
