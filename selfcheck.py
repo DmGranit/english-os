@@ -27,6 +27,14 @@ def checks():
         out.append(("errors24h", True, f"{db.tech_count_24h()} за сутки"))
     except Exception as e:
         out.append(("errors24h", False, str(e)))
+    try:
+        days = db.stock_days()
+        if days is None:
+            out.append(("stock", True, "нет активных учеников"))
+        else:
+            out.append(("stock", days >= 14, f"новых слов на ~{days} дн. у самого активного"))
+    except Exception as e:
+        out.append(("stock", False, str(e)))
     return out
 
 

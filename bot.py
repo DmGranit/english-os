@@ -16,7 +16,7 @@ English OS — каркас телеграм-бота.
     - парсинг свободного ввода «Учим X, Y» в режим+слова (или только кнопки)
 """
 import html as _htmlmod
-import os, json, re, time, asyncio, datetime, logging, types, urllib.parse, zlib
+import os, json, re, shutil, time, asyncio, datetime, logging, types, urllib.parse, zlib
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, ReplyKeyboardRemove,
                       BotCommand, BotCommandScopeChat)
@@ -34,6 +34,23 @@ VOICE_MAX_SEC = int(os.environ.get("VOICE_MAX_SEC", "60"))     # секунд н
 TEXT_MAX_LEN = int(os.environ.get("TEXT_MAX_LEN", "2000"))     # символов на одно сообщение
 COOLDOWN_MSG = ("☕ Передохнём пару минут — за последний час было много запросов. "
                 "Карточки ☀️ Повторить работают без ограничений!")
+
+# ежедневный бэкап: локально + копия на офсайт (Google Drive синхронизирует в облако)
+OFFSITE_DIR = os.environ.get("ENGLISH_OS_OFFSITE", r"G:\Мой диск\English_OS\backups")
+BACKUP_MINUTE = 3 * 60 + 30          # 03:30 — тихий час
+STOCK_ALERT_DAYS = 14                # запас новых слов меньше — карточка владельцу
+
+def _daily_backup():
+    """Бэкап базы + копия на офсайт. Возвращает путь копии или None (офсайт недоступен)."""
+    src = db.backup()
+    try:
+        os.makedirs(OFFSITE_DIR, exist_ok=True)
+        dst = os.path.join(OFFSITE_DIR, os.path.basename(src))
+        shutil.copy(src, dst)
+        return dst
+    except Exception:
+        log.exception("offsite backup failed (локальный бэкап есть: %s)", src)
+        return None
 
 def _rate_ok(ud, now=None):
     """Лимитер: не больше LLM_HOURLY_CAP вызовов модели в час на пользователя.
@@ -198,6 +215,8 @@ _SLOTS = [("new", "🌅", "Новые"), ("review", "☀️", "Повторит�
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3])(?::([0-5]\d))?$")
 
 def _fmt_time(minutes):
+    if minutes is None:                       # слот выключен явно (/remind off)
+        return "выкл"
     return f"{minutes // 60}:{minutes % 60:02d}"
 
 def _parse_time(tok):
@@ -371,7 +390,8 @@ async def on_pace(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Отлично, начнём отсюда. 🎯\n"
         f"Первые слова: {starter}.\n\n"
         "Дальше я сам подстроюсь под тебя: пойдёт легко — добавлю посложнее; будет трудно — притормозим.\n"
-        "Пиши «учим <слово>», говори голосом или жми 📖 Читать. Сменить темп — /pace.")
+        "Пиши «учим <слово>», говори голосом или жми 📖 Читать. Сменить темп — /pace.\n"
+        "Буду напоминать о повторении в 10:00 (поменять: /remind 9 · выключить: /remind off).")
     await q.message.reply_text("Кнопки управления — снизу 👇 Справка: /help", reply_markup=MAIN_KB)
     await q.message.reply_text(
         "Как заниматься?\n"
@@ -582,9 +602,10 @@ async def _process_user_text(update, ctx, uid, text):
     await _say(update.message, reply)
 
 # ---------- роутинг намерения «учим X» ----------
+# «new words?» убран из триггеров: «New words are hard for me» — обычная фраза, не намерение (A6)
 _LEARN_RE = re.compile(
     r"^\s*(?:давай\s+)?(?:учим|учить|выучим|поучим|разбер[её]м|разбери|хочу выучить|хочу учить|"
-    r"teach me|i'?d like to learn|i want to learn|let'?s learn|new words?)\b[:\-\s]*(.+)$",
+    r"teach me|i'?d like to learn|i want to learn|let'?s learn)\b[:\-\s]*(.+)$",
     re.I)
 
 _LEARN_STOP = {"and", "or", "the", "a", "an", "to", "with", "и", "или",
@@ -1342,6 +1363,12 @@ async def remind_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Напиши три времени через пробел (утро, день, вечер): 9 14 19 или 8:30 13 19:15.")
         return
     if a in ("off", "выкл", "stop", "0"):
+        if db.get_program(uid) == "cycle":               # выключение слотовых напоминаний
+            for slot in ("morning", "day", "evening"):
+                db.set_slot_time(uid, slot, None)
+            await update.message.reply_text(
+                "Слотовые напоминания выключены. Вернуть: /remind и задай три времени.")
+            return
         db.set_reminder(uid, None)
         await update.message.reply_text("Напоминания выключены.")
         return
@@ -1374,6 +1401,16 @@ async def _reminder_tick(app, minute_of_day):
         if text:
             try:
                 await app.bot.send_message(uid, text)
+            except Exception:
+                pass
+    if minute_of_day == BACKUP_MINUTE:                       # ночной бэкап + сигнал о запасе
+        log.info("daily backup -> %s", _daily_backup())
+        days = db.stock_days()
+        if days is not None and days < STOCK_ALERT_DAYS and OWNER_ID:
+            try:
+                await app.bot.send_message(
+                    OWNER_ID, f"📉 Запас новых слов: ~{days} дн. у самого активного ученика. "
+                              f"Пора пополнить: /fill <сценарий> 15")
             except Exception:
                 pass
 

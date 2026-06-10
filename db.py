@@ -333,16 +333,14 @@ def set_program(user_id, program):
                   (user_id, program, _today()))
 
 def get_slot_times(user_id):
-    """Времена слотов программы дня в МИНУТАХ от полуночи; дефолты 540/840/1140."""
+    """Времена слотов программы дня в МИНУТАХ от полуночи. None у слота = напоминание
+    выключено явно; нет строки пользователя — дефолты 540/840/1140."""
     with _conn() as c:
         r = c.execute("""SELECT remind_morning, remind_day, remind_evening
                          FROM users WHERE user_id=?""", (user_id,)).fetchone()
-    d = {"morning": 540, "day": 840, "evening": 1140}
-    if r:
-        for slot, col in _SLOT_COLS.items():
-            if r[col] is not None:
-                d[slot] = r[col]
-    return d
+    if not r:
+        return {"morning": 540, "day": 840, "evening": 1140}
+    return {slot: r[col] for slot, col in _SLOT_COLS.items()}
 
 def set_slot_time(user_id, slot, minutes):
     """minutes — минуты от полуночи (0–1439)."""
@@ -360,10 +358,9 @@ def slot_users(minute_of_day):
         rows = c.execute("""SELECT user_id, remind_morning, remind_day, remind_evening
                             FROM users WHERE program='cycle'""").fetchall()
     for r in rows:
-        for slot, t in (("new", r["remind_morning"] if r["remind_morning"] is not None else 540),
-                        ("review", r["remind_day"] if r["remind_day"] is not None else 840),
-                        ("scenario", r["remind_evening"] if r["remind_evening"] is not None else 1140)):
-            if t == minute_of_day:
+        for slot, t in (("new", r["remind_morning"]), ("review", r["remind_day"]),
+                        ("scenario", r["remind_evening"])):
+            if t is not None and t == minute_of_day:   # None = слот выключен явно
                 out.append((r["user_id"], slot))
     return out
 
@@ -484,21 +481,17 @@ def format_for_agent(words, with_state=None):
     return "\n".join(lines)
 
 def match_words(text, limit=4):
-    """Слова из базы, встретившиеся в реплике — для грунтовки диалога их коллокациями/сетью."""
-    seen, toks = set(), []
-    for t in re.findall(r"[a-zA-Z]+", (text or "").lower()):
-        if t not in seen:
-            seen.add(t); toks.append(t)
-    out = []
-    if toks:
-        with _conn() as c:
-            for t in toks:
-                r = c.execute("SELECT * FROM content WHERE LOWER(word)=? LIMIT 1", (t,)).fetchone()
-                if r:
-                    out.append(_row_to_word(r))
-                    if len(out) >= limit:
-                        break
-    return out
+    """Слова из базы, встретившиеся в реплике — для грунтовки диалога их коллокациями/сетью.
+    При избытке совпадений берём самые ценные (priority), а не первые по порядку фразы."""
+    toks = sorted({t for t in re.findall(r"[a-zA-Z]+", (text or "").lower())})
+    if not toks:
+        return []
+    qm = ",".join("?" * len(toks))
+    with _conn() as c:
+        rows = c.execute(f"""SELECT * FROM content WHERE LOWER(word) IN ({qm})
+                             ORDER BY priority DESC LIMIT ?""",
+                         (*toks, limit)).fetchall()
+    return [_row_to_word(r) for r in rows]
 
 def root_info(root):
     """Этимология корня из reference (None, если нет)."""
@@ -1033,6 +1026,17 @@ def learner_profile(user_id=DEFAULT_USER, focus_n=5):
         parts.append("частые ошибки: " + ", ".join(f"{_CAT_RU.get(c, c)} ({n}×)" for c, n in errs))
     return ("ПРОФИЛЬ УЧЕНИКА (факты из базы — опирайся на них, прошлое не выдумывай): "
             + "; ".join(parts) + ".")
+
+def stock_days(active_days=7):
+    """Минимальный запас новых слов (в днях при DAILY_NEW_CAP) среди АКТИВНЫХ учеников
+    (активный = есть повторения за последние active_days). None — активных нет.
+    Сигнал владельцу «пора /fill», чтобы конвейер работал по данным, а не по памяти."""
+    since = (datetime.date.today() - datetime.timedelta(days=active_days)).isoformat()
+    with _conn() as c:
+        uids = [r["user_id"] for r in c.execute(
+            "SELECT DISTINCT user_id FROM reviews WHERE ts>=?", (since,)).fetchall()]
+    vals = [new_remaining(u) / DAILY_NEW_CAP for u in uids]
+    return round(min(vals), 1) if vals else None
 
 # ---------- технический журнал (ошибки хэндлеров + фидбек) ----------
 
