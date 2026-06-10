@@ -15,6 +15,7 @@ English OS — каркас телеграм-бота.
 Что осознанно оставлено как TODO (помечено ниже):
     - парсинг свободного ввода «Учим X, Y» в режим+слова (или только кнопки)
 """
+import html as _htmlmod
 import os, json, re, time, asyncio, datetime, logging, types, urllib.parse, zlib
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, ReplyKeyboardRemove,
@@ -103,19 +104,37 @@ def _chunks(text, limit=TG_LIMIT):
         parts.append(cur)
     return parts
 
+# модель пишет markdown (**жирный**, `код`, ### заголовки) — Telegram понимает только HTML.
+# Конвертируем на бэкенде: экранируем спецсимволы, размечаем в пределах одной строки
+# (через перенос не матчим — чанкование по строкам не порвёт теги).
+def _to_html(text):
+    s = _htmlmod.escape(text or "", quote=False)
+    s = re.sub(r"^#{1,4}\s*(.+)$", r"<b>\1</b>", s, flags=re.M)
+    s = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", s)
+    return s
+
+async def _reply_render(msg, text, markup=None):
+    """Ответ с HTML-разметкой; битые сущности — фолбэк в плоский текст (не падаем)."""
+    try:
+        return await msg.reply_text(_to_html(text), reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        return await msg.reply_text(text, reply_markup=markup)
+
 async def _say(msg, text, markup=None):
-    """reply_text с разрезанием под лимит; клавиатура — на последней части."""
+    """reply_text с разрезанием под лимит и HTML-отрисовкой; клавиатура — на последней части."""
     parts = _chunks(text)
     for p in parts[:-1]:
-        await msg.reply_text(p)
-    return await msg.reply_text(parts[-1], reply_markup=markup)
+        await _reply_render(msg, p)
+    return await _reply_render(msg, parts[-1], markup)
 
 async def _deliver(out, text, markup=None):
-    """Показать длинный текст: первая часть через out (edit или reply), хвост — реплаями."""
+    """Показать длинный текст: первая часть через out (edit или reply), хвост — реплаями.
+    out сам решает про HTML (см. замыкания в on_mode/_route_button)."""
     parts = _chunks(text)
     m = await out(parts[0], markup if len(parts) == 1 else None)
     for k, p in enumerate(parts[1:], start=2):
-        m = await m.reply_text(p, reply_markup=markup if k == len(parts) else None)
+        m = await _reply_render(m, p, markup if k == len(parts) else None)
     return m
 
 # машинный блок ```json {...}``` в конце ответа модели (контракт ИТОГ)
@@ -165,7 +184,10 @@ async def _finish_session(ud, uid, send):
     ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
     ud["mode"] = "flow"                            # роль снята: следующий текст — просто разговор
     for p in _chunks(reply):                       # отчёт может не влезть в одно сообщение
-        await send(p)
+        try:
+            await send(_to_html(p), parse_mode="HTML")
+        except Exception:                          # старый контракт send / битая разметка
+            await send(p)
     # носитель клавиатуры: подсказка слота (cycle) или нейтральный текст (free)
     await send(_next_action_text(uid), reply_markup=MAIN_KB)
 
@@ -281,7 +303,7 @@ async def _route_button(update, ctx, uid, label):
     """Кнопка постоянной клавиатуры -> то же действие, что inline/команда."""
     m = update.message
     async def out(text, markup=None):
-        return await m.reply_text(text, reply_markup=markup)
+        return await _reply_render(m, text, markup)
     if label == BTN_PROG:
         await progress_cmd(update, ctx)
     elif label == BTN_READ:
@@ -433,7 +455,11 @@ async def on_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     async def out(text, markup=None):                 # inline-путь правит то же сообщение
         if isinstance(markup, ReplyKeyboardRemove):   # edit не умеет reply-маркапы
             return await q.edit_message_text(text)
-        return await q.edit_message_text(text, reply_markup=markup)
+        try:
+            return await q.edit_message_text(_to_html(text), reply_markup=markup,
+                                             parse_mode="HTML")
+        except Exception:                             # битая разметка — плоским текстом
+            return await q.edit_message_text(text, reply_markup=markup)
 
     await _enter_mode(out, ctx, uid, mode, tmsg=q.message)
 
