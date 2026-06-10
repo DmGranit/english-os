@@ -321,6 +321,18 @@ def list_users():
 
 _SLOT_COLS = {"morning": "remind_morning", "day": "remind_day", "evening": "remind_evening"}
 
+def get_goal(user_id):
+    """Контекст ученика (профессия/цель) — для персонализации примеров и сценариев."""
+    with _conn() as c:
+        r = c.execute("SELECT goal FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return r["goal"] if r and r["goal"] else None
+
+def set_goal(user_id, goal):
+    with _conn() as c:
+        c.execute("""INSERT INTO users (user_id, goal, created_at) VALUES (?,?,?)
+                     ON CONFLICT(user_id) DO UPDATE SET goal=excluded.goal""",
+                  (user_id, goal, _today()))
+
 def get_program(user_id):
     with _conn() as c:
         r = c.execute("SELECT program FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -1060,8 +1072,13 @@ def learner_profile(user_id=DEFAULT_USER, focus_n=5):
         parts.append("сейчас в работе: " + ", ".join(focus))
     if errs:
         parts.append("частые ошибки: " + ", ".join(f"{_CAT_RU.get(c, c)} ({n}×)" for c, n in errs))
-    return ("ПРОФИЛЬ УЧЕНИКА (факты из базы — опирайся на них, прошлое не выдумывай): "
-            + "; ".join(parts) + ".")
+    out = ("ПРОФИЛЬ УЧЕНИКА (факты из базы — опирайся на них, прошлое не выдумывай): "
+           + "; ".join(parts) + ".")
+    goal = get_goal(user_id)
+    if goal:                                   # личный контекст: примеры/сценарии — про него
+        out += (f"\nКОНТЕКСТ УЧЕНИКА: {goal}. Строй примеры, тексты и сценарии вокруг "
+                f"его работы и цели — это закрепляет сильнее (self-reference).")
+    return out
 
 def stock_days(active_days=7):
     """Минимальный запас новых слов (в днях при DAILY_NEW_CAP) среди АКТИВНЫХ учеников

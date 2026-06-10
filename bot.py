@@ -651,6 +651,8 @@ async def _process_user_text(update, ctx, uid, text):
 
     reply = await _call(ctx, _mode(ctx), uid, text)
     await _say(update.message, reply)
+    if _mode(ctx) in ("flow", "scenario"):       # из живой речи тихо узнаём, кто наш ученик
+        await _maybe_capture_context(ctx, uid, text)
 
 # ---------- роутинг намерения «учим X» ----------
 # «new words?» убран из триггеров: «New words are hard for me» — обычная фраза, не намерение (A6)
@@ -791,6 +793,28 @@ async def on_topic(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _deliver_lesson(q.message, ctx, uid, wd)
 
 # ---------- вспомогательные ----------
+_CTX_SYS = (
+    "Из реплики ученика извлеки рабочий контекст (профессия/сфера/цель изучения английского), "
+    "если он там есть. Верни СТРОГО JSON: "
+    '{"capture": true, "summary": "<кратко: роль + сфера + цель>"} либо {"capture": false}. '
+    "capture=true только если в реплике РЕАЛЬНО сказано о работе/цели, не домысливай.")
+
+async def _maybe_capture_context(ctx, uid, text):
+    """Тихо вытащить контекст ученика из свободной речи (раз за сессию, если цель не задана)
+    -> users.goal -> подмешивается в каждый промпт. Анкеты нет — учим и узнаём заодно."""
+    if ctx.user_data.get("ctx_checked") or db.get_goal(uid):
+        return
+    ctx.user_data["ctx_checked"] = True
+    try:
+        raw = await asyncio.to_thread(llm.chat, _CTX_SYS, [{"role": "user", "content": text}],
+                                      max_tokens=120)
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        data = json.loads(m.group(0)) if m else {}
+        if data.get("capture") and data.get("summary"):
+            db.set_goal(uid, data["summary"].strip()[:300])
+    except Exception:
+        pass
+
 async def _call(ctx, mode, uid, user_text, with_summary=False):
     system = prompts.assemble(mode, with_summary=with_summary) + "\n\n" + db.learner_profile(uid)
     matched = db.match_words(user_text)        # грунтовка: слова из базы в реплике
