@@ -901,6 +901,7 @@ async def _post_init(app):
 def main():
     if not TOKEN:
         raise SystemExit("Задай TELEGRAM_TOKEN")
+    db.init_db()    # схема + миграции при каждом старте (идемпотентно) — не руками
     app = (Application.builder().token(TOKEN)
            .persistence(_persistence())          # сессии переживают рестарт
            .post_init(_post_init).build())
