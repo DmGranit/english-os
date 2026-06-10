@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS users (
     remind_morning INTEGER DEFAULT 540, remind_day INTEGER DEFAULT 840,
     remind_evening INTEGER DEFAULT 1140,
     role TEXT,                            -- доступ: owner|approved|pending|blocked (NULL = незнакомец)
-    name TEXT                             -- имя/username на момент заявки (для /users)
+    name TEXT,                            -- имя/username (обновляется на каждом заходе)
+    last_seen TEXT                        -- последний заход (CRM)
 );
 -- след завершённых сессий (ИТОГ): нужен для карты дня (слот SCENARIO)
 CREATE TABLE IF NOT EXISTS sessions (
@@ -140,6 +141,8 @@ def _migrate(c):
     if ucols and "role" not in ucols:         # доступ-по-заявке: роль и имя для /users
         c.execute("ALTER TABLE users ADD COLUMN role TEXT")
         c.execute("ALTER TABLE users ADD COLUMN name TEXT")
+    if ucols and "last_seen" not in ucols:    # CRM: когда был последний раз
+        c.execute("ALTER TABLE users ADD COLUMN last_seen TEXT")
     if c.execute("PRAGMA user_version").fetchone()[0] < 1:
         # v1: слоты перешли с часов на минуты от полуночи. Пересборка users нужна целиком:
         # и данные (часы -> минуты), и ДЕФОЛТЫ колонок — ALTER-дефолты прошлой версии (9/14/19)
@@ -151,8 +154,10 @@ def _migrate(c):
             onboarded INTEGER NOT NULL DEFAULT 0, reminder_hour INTEGER, created_at TEXT,
             program TEXT DEFAULT 'free',
             remind_morning INTEGER DEFAULT 540, remind_day INTEGER DEFAULT 840,
-            remind_evening INTEGER DEFAULT 1140, role TEXT, name TEXT)""")
-        c.execute("""INSERT INTO users
+            remind_evening INTEGER DEFAULT 1140, role TEXT, name TEXT, last_seen TEXT)""")
+        v0cols = {r["name"] for r in c.execute("PRAGMA table_info(users_v0)")}
+        ls = "last_seen" if "last_seen" in v0cols else "NULL"
+        c.execute(f"""INSERT INTO users
             SELECT user_id, level, goal, onboarded, reminder_hour, created_at, program,
               CASE WHEN remind_morning IS NOT NULL AND remind_morning < 24
                    THEN remind_morning*60 ELSE remind_morning END,
@@ -160,7 +165,7 @@ def _migrate(c):
                    THEN remind_day*60 ELSE remind_day END,
               CASE WHEN remind_evening IS NOT NULL AND remind_evening < 24
                    THEN remind_evening*60 ELSE remind_evening END,
-              role, name
+              role, name, {ls}
             FROM users_v0""")
         c.execute("DROP TABLE users_v0")
         c.execute("PRAGMA user_version = 1")
@@ -307,6 +312,37 @@ def ensure_roles(owner_id, allowed_ids):
             set_role(uid, "approved")
     if owner_id and get_role(owner_id) != "owner":
         set_role(owner_id, "owner")
+
+def touch_user(user_id, name=None):
+    """Отметить заход: обновить имя/username и last_seen. Роль НЕ трогаем.
+    Зовётся на каждом апдейте — чтобы CRM знала живые имена, а не голые id."""
+    now = datetime.datetime.now().isoformat()
+    with _conn() as c:
+        if name:
+            c.execute("""INSERT INTO users (user_id, name, last_seen, created_at)
+                         VALUES (?,?,?,?)
+                         ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,
+                           last_seen=excluded.last_seen""", (user_id, name, now, _today()))
+        else:
+            c.execute("""INSERT INTO users (user_id, last_seen, created_at) VALUES (?,?,?)
+                         ON CONFLICT(user_id) DO UPDATE SET last_seen=excluded.last_seen""",
+                      (user_id, now, _today()))
+
+def get_name(user_id):
+    with _conn() as c:
+        r = c.execute("SELECT name FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return r["name"] if r and r["name"] else None
+
+def crm_rows():
+    """Мини-CRM: все известные люди с ролью, именем, контекстом, активностью."""
+    with _conn() as c:
+        rows = c.execute("""SELECT u.user_id, u.role, u.name, u.goal, u.last_seen, u.created_at,
+                              (SELECT COUNT(*) FROM sessions s WHERE s.user_id=u.user_id) sessions,
+                              (SELECT COUNT(*) FROM state st
+                               WHERE st.user_id=u.user_id AND (st.status='known' OR st.box>=3)) mastered
+                            FROM users u
+                            ORDER BY (u.last_seen IS NULL), u.last_seen DESC, u.user_id""").fetchall()
+    return [dict(r) for r in rows]
 
 def list_users():
     """Все известные пользователи: роль, имя, дата, освоено слов (для /users)."""

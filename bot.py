@@ -623,6 +623,10 @@ async def _process_user_text(update, ctx, uid, text):
         await _route_button(update, ctx, uid, text)
         return
 
+    if ctx.user_data.get("await_feedback"):      # ждём фидбек (текстом или голосом)
+        await _save_feedback(update, ctx, uid, text)
+        return
+
     if ctx.user_data.get("act_wid"):             # ждём фразу для активации нового слова
         await _handle_activation_phrase(update, ctx, uid, text)
         return
@@ -654,7 +658,11 @@ async def _process_user_text(update, ctx, uid, text):
         return
 
     reply = await _call(ctx, _mode(ctx), uid, text)
-    await _say(update.message, reply)
+    n = ctx.user_data.get("msg_n", 0) + 1
+    ctx.user_data["msg_n"] = n
+    # 👍/👎 изредка (каждый 4-й ответ диалога) — сигнал качества без визуального шума
+    rate = _rate_kb(str(n)) if _mode(ctx) in ("flow", "scenario") and n % 4 == 0 else None
+    await _say(update.message, reply, rate)
     if _mode(ctx) in ("flow", "scenario"):       # из живой речи тихо узнаём, кто наш ученик
         await _maybe_capture_context(ctx, uid, text)
 
@@ -1394,22 +1402,44 @@ async def abstats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 # ---------- надёжность: фидбек, селфчек, журнал ошибок ----------
-async def feedback_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/feedback <текст> — сообщение о проблеме/идее: в журнал + карточка владельцу."""
-    text = " ".join(ctx.args or []).strip()
-    if not text:
-        await update.message.reply_text(
-            "Напиши после команды, что не так или чего не хватает:\n"
-            "/feedback карточки повторяются слишком часто")
-        return
-    uid = _learner(update)
+async def _save_feedback(update, ctx, uid, text):
+    """Записать фидбек + карточка владельцу (общий путь для текста и голоса)."""
     db.log_tech(uid, "feedback", text)
     if OWNER_ID and uid != OWNER_ID:
         try:
-            await ctx.bot.send_message(OWNER_ID, f"🐞 Фидбек от {uid}: {text}")
+            await ctx.bot.send_message(OWNER_ID, f"🐞 Фидбек от {db.get_name(uid) or uid}: {text}")
         except Exception:
             log.exception("feedback notify failed")
+    ctx.user_data.pop("await_feedback", None)
     await update.message.reply_text("Спасибо! Записал и передал 🙏")
+
+async def feedback_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/feedback <текст> — проблема/идея в журнал + владельцу. Без текста — приём голосом."""
+    text = " ".join(ctx.args or []).strip()
+    if not text:                                  # ждём следующее сообщение (текст ИЛИ голос)
+        ctx.user_data["await_feedback"] = True
+        await update.message.reply_text(
+            "Что не так или чего не хватает? Напиши или наговори голосом — передам разработчику. "
+            "(или ещё раз: /feedback карточки мелковаты)")
+        return
+    await _save_feedback(update, ctx, _learner(update), text)
+
+def _rate_kb(key):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍", callback_data=f"rate:up:{key}"),
+        InlineKeyboardButton("👎", callback_data=f"rate:down:{key}"),
+    ]])
+
+async def on_rate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Оценка ответа бота 👍/👎 — лёгкий сигнал качества в журнал (датасет «что работает»)."""
+    q = update.callback_query
+    _, vote, key = q.data.split(":", 2)
+    db.log_tech(_learner(update), "rating", f"{vote}:{key}")
+    await q.answer("Спасибо! 🙏")
+    try:
+        await q.edit_message_reply_markup(reply_markup=None)   # убрать кнопки после оценки
+    except Exception:
+        pass
 
 async def health_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/health — селфчек системы (владелец)."""
@@ -1546,6 +1576,10 @@ async def _guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     decision = _access_decision(u.id)
     if decision == "allowed":
         ctx.user_data["last_seen"] = time.time()   # пульс активности — для авто-ИТОГа
+        try:
+            db.touch_user(u.id, _user_label(u))    # CRM: живое имя/username, не голый id
+        except Exception:
+            log.exception("touch_user failed")
         return
     if decision == "pending_new" and db.request_access(u.id, _user_label(u)):
         if OWNER_ID:                               # карточка владельцу — один раз на заявку
@@ -1596,12 +1630,21 @@ def _owner_badge(uid):
 
 _ROLE_MARK = {"owner": "👑", "approved": "✅", "pending": "🔔", "blocked": "🚫"}
 
+def _ago(iso):
+    """«сегодня / вчера / N дн назад» из ISO-времени (для CRM)."""
+    if not iso:
+        return "—"
+    d = iso[:10]
+    today = datetime.date.today()
+    days = (today - datetime.date.fromisoformat(d)).days
+    return "сегодня" if days == 0 else "вчера" if days == 1 else f"{days} дн назад"
+
 async def users_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/users — кто есть в боте: роль, имя, прогресс; кнопки решений по заявкам."""
+    """/users — мини-CRM: роль, имя, контекст, активность; решения по заявкам."""
     if OWNER_ID and _learner(update) != OWNER_ID:
         await update.message.reply_text("Список пользователей — только у администратора.")
         return
-    rows = db.list_users()
+    rows = db.crm_rows()
     if not rows:
         await update.message.reply_text("Пока никого нет.")
         return
@@ -1609,18 +1652,20 @@ async def users_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pending = []
     for r in rows:
         mark = _ROLE_MARK.get(r["role"], "·")
-        lines.append(f"{mark} {r['name'] or r['user_id']} — с {r['created_at']}, "
-                     f"освоено {r['mastered']}")
+        line = (f"{mark} {r['name'] or r['user_id']} · {r['sessions']} сесс. · "
+                f"{r['mastered']} слов · {_ago(r['last_seen'])}")
+        if r["goal"]:
+            line += f"\n    🎯 {r['goal']}"
+        lines.append(line)
         if r["role"] == "pending":
             pending.append(r)
     msg = "\n".join(lines)
     if pending:                                   # решения по первой заявке прямо отсюда
         p = pending[0]
-        await update.message.reply_text(
-            msg + f"\n\n🔔 Ждёт решения: {p['name'] or p['user_id']}",
-            reply_markup=_knock_kb(p["user_id"]))
+        await _say(update.message, msg + f"\n\n🔔 Ждёт решения: {p['name'] or p['user_id']}",
+                   _knock_kb(p["user_id"]))
     else:
-        await update.message.reply_text(msg)
+        await _say(update.message, msg)
 
 # ---------- /add: добавить встреченные слова в очередь на изучение ----------
 async def add_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1882,6 +1927,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_assembly, pattern=r"^asm:"))
     app.add_handler(CallbackQueryHandler(on_mcq, pattern=r"^mcq:"))
     app.add_handler(CallbackQueryHandler(on_activation, pattern=r"^act:"))
+    app.add_handler(CallbackQueryHandler(on_rate, pattern=r"^rate:"))
     app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
     app.add_handler(CallbackQueryHandler(on_deep, pattern=r"^deep:"))
     app.add_handler(CallbackQueryHandler(on_branch, pattern=r"^branch:"))
