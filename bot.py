@@ -600,8 +600,8 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🎤 Не расслышал. Повтори голосом или напиши текстом.")
         return
     card, _ = _deck_card(ctx)
-    if card and len(text.split()) > 5:        # карточка ждёт слово, пришла тирада —
-        await update.message.reply_text(      # это галлюцинация Whisper, не ответ
+    if card and not ctx.user_data.get("act_wid") and len(text.split()) > 5:
+        await update.message.reply_text(      # карточка ждёт слово, пришла тирада — галлюцинация
             "🎤 Кажется, не расслышал. Скажи одно слово-ответ ещё раз — или напиши текстом.")
         return
     await update.message.reply_text(f"🗣 You said: {text}")
@@ -621,6 +621,10 @@ async def _process_user_text(update, ctx, uid, text):
 
     if text in MAIN_BUTTONS:                     # постоянная клавиатура
         await _route_button(update, ctx, uid, text)
+        return
+
+    if ctx.user_data.get("act_wid"):             # ждём фразу для активации нового слова
+        await _handle_activation_phrase(update, ctx, uid, text)
         return
 
     if ctx.user_data.get("typed_wid"):           # ждём напечатанный ответ карточки box 3
@@ -681,6 +685,52 @@ async def _typing(msg):
     except Exception:
         pass
 
+# ---------- активация: закрепить новое слово своей фразой сразу (generation effect) ----------
+def _activation_kb(word_id):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎤 Скажи фразу", callback_data=f"act:say:{word_id}"),
+        InlineKeyboardButton("✍️ Напиши фразу", callback_data=f"act:write:{word_id}"),
+    ], [InlineKeyboardButton("⏭ Потом", callback_data=f"act:skip:{word_id}")]])
+
+async def on_activation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Выбор канала активации: голосом/текстом сказать свою фразу со словом, либо «потом»."""
+    q = update.callback_query
+    await q.answer()
+    _, action, wid = q.data.split(":")
+    if action == "skip":
+        ctx.user_data.pop("act_wid", None)
+        await q.edit_message_text("Ок! Закрепим на повторении. 👍")
+        return
+    word = db.get_word(int(wid))
+    if not word:
+        return
+    ctx.user_data["act_wid"] = int(wid)
+    how = "Скажи голосом" if action == "say" else "Напиши"
+    goal = db.get_goal(_learner(update))
+    about = " про свой проект/работу" if goal else ""
+    await q.edit_message_text(
+        f"⚡ {how} короткую фразу со словом «{word['word']}» ({word['ru']}){about} — "
+        f"проверю и подскажу, как звучит у носителя.")
+
+async def _handle_activation_phrase(update, ctx, uid, text):
+    """Фраза ученика с целевым словом: мгновенный фидбек + смысловая награда (generation effect)."""
+    wid = ctx.user_data.get("act_wid")
+    word = db.get_word(wid)
+    if word and not re.search(re.escape(word["word"]), text, re.I):  # слова нет — не тратим LLM
+        await update.message.reply_text(
+            f"Попробуй ещё раз — вставь слово «{word['word']}» в свою фразу 🙂")
+        return
+    ctx.user_data.pop("act_wid", None)
+    system = ("Ты — тёплый тренер английского. Ученик составил свою фразу с целевым словом. "
+              "Кратко: верно ли и естественно ли. Если есть ошибка — «❌→✅» с причиной. "
+              "Дай строку «💬 Natural: <как сказал бы носитель>». Без воды, по-доброму.")
+    seed = f"Целевое слово: {word['word']} ({word['ru']}). Фраза ученика: {text}"
+    reply = await asyncio.to_thread(llm.chat, system, [{"role": "user", "content": seed}])
+    db.log_tech(uid, "activation", f"{word['word']}: {text[:120]}")
+    await _say(update.message,
+               reply + "\n\n🌱 Ты использовал слово в живой фразе — это закрепляет сильнее "
+                       "карточек. Так растут нейронные связи!")
+
 def _deep_kb(wd):
     """Кнопки разбора: лупа + слово + перевод, и снизу — продолжения (не терять импульс)."""
     rows = [[InlineKeyboardButton(f"🔍 {x['word']} — {x['ru']}", callback_data=f"deep:{x['word_id']}")]
@@ -699,6 +749,8 @@ async def _deliver_lesson(msg, ctx, uid, wd):
     await _typing(msg)
     reply = await asyncio.to_thread(llm.chat, system, [{"role": "user", "content": seed}])
     await _say(msg, reply, _deep_kb(wd))
+    if wd:                                       # активация: закрепить первое слово фразой сразу
+        await msg.reply_text("⚡ Закрепим прямо сейчас?", reply_markup=_activation_kb(wd[0]["word_id"]))
 
 async def _teach_words(update, ctx, uid, words):
     """Слова из базы — разбор NEW + ввод в SRS + кнопки «Глубже»; новых — в очередь enrich/pending."""
@@ -1829,6 +1881,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_review, pattern=r"^rev:"))
     app.add_handler(CallbackQueryHandler(on_assembly, pattern=r"^asm:"))
     app.add_handler(CallbackQueryHandler(on_mcq, pattern=r"^mcq:"))
+    app.add_handler(CallbackQueryHandler(on_activation, pattern=r"^act:"))
     app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
     app.add_handler(CallbackQueryHandler(on_deep, pattern=r"^deep:"))
     app.add_handler(CallbackQueryHandler(on_branch, pattern=r"^branch:"))
