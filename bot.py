@@ -139,16 +139,29 @@ async def _reply_render(msg, text, markup=None):
         return await msg.reply_text(text, reply_markup=markup)
 
 async def _swap_in(ph, reply, markup=None):
-    """Заменить плейсхолдер «⏳…» готовым ответом: HTML, чанки, фолбэк в плоский текст."""
+    """Заменить плейсхолдер «⏳…» готовым ответом. НИКОГДА не оставляет плейсхолдер
+    висеть: HTML -> плоский edit -> новое сообщение -> кнопка «не работает». Сбои логируются."""
     parts = _chunks(reply)
-    try:
-        await ph.edit_text(_to_html(parts[0]), parse_mode="HTML",
-                           reply_markup=markup if len(parts) == 1 else None)
+    first_markup = markup if len(parts) == 1 else None
+    try:                                          # 1) штатно: правим плейсхолдер с HTML
+        await ph.edit_text(_to_html(parts[0]), parse_mode="HTML", reply_markup=first_markup)
     except Exception:
-        try:
-            await ph.edit_text(parts[0], reply_markup=markup if len(parts) == 1 else None)
+        try:                                      # 2) HTML кривой -> плоский edit
+            await ph.edit_text(parts[0], reply_markup=first_markup)
         except Exception:
-            pass
+            log.exception("swap_in edit failed — fallback to new message")
+            try:                                  # 3) edit не идёт -> новое сообщение
+                await ph.reply_text(parts[0], reply_markup=first_markup)
+            except Exception:                     # 4) совсем глухо -> кнопка ретрая
+                log.exception("swap_in reply failed")
+                try:
+                    await ph.reply_text(
+                        "⚠️ Не получил ответ — что-то пошло не так. Попробуем ещё раз?",
+                        reply_markup=InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("🔄 Повторить", callback_data="retry:scn")]]))
+                except Exception:
+                    pass
+                return ph
     m = ph
     for k, p in enumerate(parts[1:], start=2):
         m = await _reply_render(m, p, markup if k == len(parts) else None)
@@ -808,7 +821,18 @@ async def on_scenario(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     scenario = q.data.split(":", 1)[1]
+    ctx.user_data["last_scenario"] = scenario     # для кнопки «🔄 Повторить»
     await _begin_scenario(q.message, ctx, _learner(update), scenario)
+
+async def on_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «🔄 Повторить» после сбоя: перезапустить последний сценарий."""
+    q = update.callback_query
+    await q.answer()
+    scn = ctx.user_data.get("last_scenario")
+    if scn:
+        await _begin_scenario(q.message, ctx, _learner(update), scn)
+    else:
+        await q.message.reply_text("Выбери сценарий заново: 🎭 Сценарий")
 
 # ---------- «📚 Темы»: навигация по DNA-идеям и сценариям ----------
 def _axis_kb():
@@ -1935,6 +1959,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_calendar, pattern=r"^cal:"))
     app.add_handler(CallbackQueryHandler(on_program, pattern=r"^prog:"))
     app.add_handler(CallbackQueryHandler(on_scenario, pattern=r"^scn:"))
+    app.add_handler(CallbackQueryHandler(on_retry, pattern=r"^retry:"))
     app.add_handler(CallbackQueryHandler(on_topics, pattern=r"^topics$"))
     app.add_handler(CallbackQueryHandler(on_topax, pattern=r"^topax:"))
     app.add_handler(CallbackQueryHandler(on_topic, pattern=r"^topic:"))
