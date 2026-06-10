@@ -118,6 +118,29 @@ def validate(payload, word):
         "useful": clamp(payload.get("useful")),
     }
 
+def qa_payload(payload):
+    """QA-шаг «стерео» (опора № 4): второй ИИ-проход проверяет карточку перед очередью.
+    Возвращает (payload|None, причина). Сомнительный корень вычищается — не выдумываем латынь."""
+    system = (
+        "Ты — въедливый рецензент словарных карточек делового английского. Проверь карточку:\n"
+        "1) ru — точный перевод слова word; 2) collocations — РЕАЛЬНЫЕ устойчивые сочетания "
+        "именно с этим словом; 3) root — настоящий греко-латинский/германский корень "
+        "(сомнительно или выдумано -> drop_root=true); 4) example — естественное предложение.\n"
+        'Верни СТРОГО один JSON: {"ok": true|false, "drop_root": true|false, "reason": "кратко"}.\n'
+        "ok=false ТОЛЬКО при серьёзной ошибке (неверный перевод, выдуманные коллокации, "
+        "пример с другим словом). Сомнительный корень — это drop_root, а не ok=false.")
+    raw = llm.chat(system, [{"role": "user",
+                             "content": json.dumps(payload, ensure_ascii=False)}])
+    verdict = _parse(raw)
+    if not isinstance(verdict, dict) or "ok" not in verdict:
+        return None, "QA не вернул вердикт"
+    if not verdict.get("ok"):
+        return None, verdict.get("reason") or "отклонено QA"
+    if verdict.get("drop_root") and payload.get("root"):
+        payload = dict(payload, root=None)
+    return payload, "ok"
+
+
 def enrich_word(word, ideas, frames, scenarios, scenario_override=None):
     raw = llm.chat(_system_prompt(ideas, frames, scenarios),
                    [{"role": "user", "content": f"Слово: {word}"}])
@@ -146,6 +169,11 @@ def run(words, user_id=db.DEFAULT_USER, scenario=None):
         if not payload:
             res["failed"] += 1
             print(f"✗ {w}: ИИ не вернул валидный JSON")
+            continue
+        payload, reason = qa_payload(payload)          # «стерео»: перекрёстная проверка
+        if not payload:
+            res["failed"] += 1
+            print(f"✗ {w}: QA отклонил — {reason}")
             continue
         db.add_pending(w, payload, user_id)
         res["added"] += 1

@@ -32,9 +32,18 @@ def _fake_payload(word):
                        "collocations": ["some collocation"]})
 
 
+def _qa_aware(generate):
+    """Фейк llm.chat: QA-проходу отвечает «ok», генерации — переданной функцией."""
+    def chat(system, messages, **k):
+        if "рецензент" in system:
+            return '{"ok": true, "drop_root": false, "reason": "ok"}'
+        return generate(system, messages)
+    return chat
+
+
 def test_run_overrides_scenario(fresh_db, monkeypatch):
-    monkeypatch.setattr(llm, "chat", lambda system, messages, **k:
-                        _fake_payload(messages[-1]["content"].split()[-1]))
+    monkeypatch.setattr(llm, "chat", _qa_aware(
+        lambda system, messages: _fake_payload(messages[-1]["content"].split()[-1])))
     res = enrich.run(["menu", "waiter"], user_id=UID, scenario="Restaurant")
     assert res["added"] == 2
     items = fresh_db.list_pending(UID)
@@ -44,10 +53,63 @@ def test_run_overrides_scenario(fresh_db, monkeypatch):
 
 
 def test_run_without_override_keeps_old_behaviour(fresh_db, monkeypatch):
-    monkeypatch.setattr(llm, "chat", lambda system, messages, **k: _fake_payload("menu"))
+    monkeypatch.setattr(llm, "chat", _qa_aware(lambda system, messages: _fake_payload("menu")))
     enrich.run(["menu"], user_id=UID)
     payload = json.loads(fresh_db.list_pending(UID)[0]["payload"])
     assert payload["scenario"] in ("Universal", "Pitching", "Status update", "Negotiating")
+
+
+# ---------- QA-шаг («стерео»): второй ИИ-проход перед очередью ----------
+
+def _chat_seq(replies):
+    """llm.chat-мок, отдающий ответы по очереди (1-й вызов — генерация, 2-й — QA)."""
+    it = iter(replies)
+
+    def chat(*a, **k):
+        return next(it)
+
+    return chat
+
+
+def test_qa_ok_passes_to_pending(fresh_db, monkeypatch):
+    monkeypatch.setattr(llm, "chat", _chat_seq([
+        _fake_payload("traction"),
+        '{"ok": true, "drop_root": false, "reason": "всё верно"}',
+    ]))
+    res = enrich.run(["traction"], user_id=UID)
+    assert res["added"] == 1 and res["failed"] == 0
+    assert fresh_db.list_pending(UID)[0]["word"] == "traction"
+
+
+def test_qa_reject_blocks_word(fresh_db, monkeypatch):
+    monkeypatch.setattr(llm, "chat", _chat_seq([
+        _fake_payload("traction"),
+        '{"ok": false, "reason": "перевод неверен"}',
+    ]))
+    res = enrich.run(["traction"], user_id=UID)
+    assert res["added"] == 0 and res["failed"] == 1
+    assert fresh_db.list_pending(UID) == []
+
+
+def test_qa_drop_root_strips_invented_latin(fresh_db, monkeypatch):
+    payload = json.loads(_fake_payload("traction"))
+    payload["root"] = "tract (выдумка)"
+    monkeypatch.setattr(llm, "chat", _chat_seq([
+        json.dumps(payload),
+        '{"ok": true, "drop_root": true, "reason": "корень сомнителен"}',
+    ]))
+    enrich.run(["traction"], user_id=UID)
+    saved = json.loads(fresh_db.list_pending(UID)[0]["payload"])
+    assert saved["root"] is None                     # латынь вычищена, слово сохранено
+
+
+def test_qa_garbage_verdict_blocks(fresh_db, monkeypatch):
+    monkeypatch.setattr(llm, "chat", _chat_seq([
+        _fake_payload("traction"),
+        "я не настроен сегодня проверять",
+    ]))
+    res = enrich.run(["traction"], user_id=UID)
+    assert res["failed"] == 1                        # нет вердикта — не пускаем
 
 
 # ---------- confirm_all_pending: кнопка «Подтвердить все» ----------
