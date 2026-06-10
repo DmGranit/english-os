@@ -1034,26 +1034,33 @@ CANDO = [
 ]
 
 def progress_summary(user_id=DEFAULT_USER):
-    """Сводка пути для /progress (вторична к can-do, канон Ч.5): числа показывают
-    дорогу к покрытию (Nation), а не трофеи."""
+    """Сводка пути для /progress. Показывает УСИЛИЕ (повторения, точность) и три ступени
+    зрелости, а не только финал — иначе после большой сессии «освоено 0» демотивирует.
+    Числа — дорога к покрытию (Nation), а не трофеи (канон Ч.5)."""
     with _conn() as c:
         mastered = c.execute("""SELECT COUNT(*) FROM state
                                 WHERE user_id=? AND (status='known' OR box>=3)""",
                              (user_id,)).fetchone()[0]
-        learning = c.execute("""SELECT COUNT(*) FROM state
+        familiar = c.execute("""SELECT COUNT(*) FROM state
                                 WHERE user_id=? AND status IN ('learning','forgot') AND box<3""",
                              (user_id,)).fetchone()[0]
         new = c.execute("SELECT COUNT(*) FROM state WHERE user_id=? AND status='new'",
                         (user_id,)).fetchone()[0]
         sessions = c.execute("SELECT COUNT(*) FROM sessions WHERE user_id=?",
                              (user_id,)).fetchone()[0]
+        reviews = c.execute("SELECT COUNT(*) FROM reviews WHERE user_id=?",
+                            (user_id,)).fetchone()[0]
+        ok = c.execute("SELECT COALESCE(SUM(remembered),0) FROM reviews WHERE user_id=?",
+                       (user_id,)).fetchone()[0]
         first = c.execute("""SELECT MIN(d) FROM (
                                SELECT MIN(date) d FROM sessions WHERE user_id=?
                                UNION ALL
                                SELECT MIN(substr(ts,1,10)) d FROM reviews WHERE user_id=?)""",
                           (user_id, user_id)).fetchone()[0]
-    return {"mastered": mastered, "learning": learning, "new": new,
-            "sessions": sessions, "since": first, "nation_target": NATION_TARGET}
+    return {"mastered": mastered, "familiar": familiar, "learning": familiar, "new": new,
+            "sessions": sessions, "reviews": reviews,
+            "accuracy": round(ok / reviews * 100) if reviews else None,
+            "since": first, "nation_target": NATION_TARGET}
 
 def cando_progress(user_id=DEFAULT_USER, ready_ratio=0.6):
     """Прогресс по can-do: доля освоенных (known/box>=3) слов в сценарии каждого пункта.

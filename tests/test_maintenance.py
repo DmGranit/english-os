@@ -75,3 +75,15 @@ def test_progress_summary_counts(fresh_db):
 def test_progress_summary_empty_user(fresh_db):
     s = fresh_db.progress_summary(UID)
     assert s["mastered"] == 0 and s["sessions"] == 0 and s["since"] is None
+
+
+def test_progress_counts_effort_and_tiers(fresh_db):
+    fresh_db.start_learning([1, 2], UID)
+    fresh_db.review(1, True, UID)                       # box 2 — «знакомо»
+    fresh_db.review(2, True, UID)
+    fresh_db.review(2, True, UID)                       # box 3 — «освоено»
+    s = fresh_db.progress_summary(UID)
+    assert s["reviews"] == 3                            # усилие видно: всего повторений
+    assert s["familiar"] == 1                           # знакомо (box 1-2)
+    assert s["mastered"] == 1                           # освоено (box>=3)
+    assert "accuracy" in s                              # точность ответов

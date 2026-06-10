@@ -553,7 +553,9 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         await out(text, kb)
 
     elif mode == "scenario":   # пресеты живых тем + свой вариант текстом (канон 3.4)
-        await out("🎭 Выбери ситуацию — или просто напиши свою (например: «питч инвестору»):",
+        await out("🎭 РОЛЕВАЯ ИГРА. Я войду в роль (инвестор, клиент…), а ты отвечаешь "
+                  "по-английски — можно голосом 🎤. Ошибки разберу в конце (жми 🏁 Итог).\n\n"
+                  "Выбери ситуацию — или напиши свою («питч инвестору»):",
                   _scenario_kb())
 
     else:  # flow — диалог: клавиатура с экрана убирается целиком,
@@ -1400,12 +1402,14 @@ async def progress_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{mark} [{r['level']}] {r['ru']} — {r['mastered']}/{r['total']}")
     lines.append("\n⚠️ Это ориентир по словарю, а не официальная оценка CEFR.")
     s = db.progress_summary(uid)            # сводка пути — вторична к can-do (канон Ч.5)
-    path = (f"\n🛤 Путь: освоено {s['mastered']} узлов · в работе {s['learning']} · "
-            f"впереди в базе {s['new']}\n"
-            f"Ориентир покрытия — ~{s['nation_target']} семей слов (Nation). "
-            f"Числа — дорога, мера умения — список выше.")
-    if s["sessions"]:
-        path += f"\nЗанятий: {s['sessions']}" + (f" · с {s['since']}" if s["since"] else "")
+    acc = f" · точность {s['accuracy']}%" if s["accuracy"] is not None else ""
+    path = (f"\n💪 Усилие: {s['reviews']} повторений{acc} · {s['sessions']} занятий"
+            + (f" · с {s['since']}" if s["since"] else "") + "\n"
+            f"🌱 Зреют: 🟡 знакомо {s['familiar']} → 🟢 освоено {s['mastered']} "
+            f"(освоенным слово становится после нескольких повторений в разные дни) → "
+            f"впереди {s['new']}\n"
+            f"Ориентир — ~{s['nation_target']} семей слов (Nation). Числа — дорога, "
+            f"мера умения — список выше.")
     lines.append(path)
     await update.message.reply_text("\n".join(lines))
 
