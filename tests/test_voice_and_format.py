@@ -1,5 +1,5 @@
 """A7: подсказки Whisper (язык по режиму + слова в работе) и чистка ```-заборов в ИТОГе."""
-import types
+import asyncio, types
 
 import bot, llm
 from conftest import UID
@@ -45,6 +45,61 @@ def test_stt_hints_empty_focus_is_none(fresh_db):
     ctx = types.SimpleNamespace(user_data={"mode": "flow"})
     _, focus = bot._stt_hints(ctx, UID)
     assert focus is None                                  # нет слов в работе — без prompt
+
+
+# ---------- голос во время колоды: язык карточки + страховка от галлюцинаций ----------
+
+def _deck_ctx(fresh_db, box):
+    import time as _t
+    return types.SimpleNamespace(user_data={
+        "review_queue": [1], "review_box": {1: box}, "review_pos": 0,
+        "card_shown_at": _t.time()})
+
+
+def test_stt_hints_deck_box1_expects_russian(fresh_db):
+    ctx = _deck_ctx(fresh_db, 1)
+    lang, prompt = bot._stt_hints(ctx, UID)
+    assert lang == "ru"                                  # ответ box1 — перевод по-русски
+    assert "инвестировать" in prompt                     # ожидаемое слово — в подсказку
+
+
+def test_stt_hints_deck_box3_expects_english(fresh_db):
+    ctx = _deck_ctx(fresh_db, 3)
+    lang, prompt = bot._stt_hints(ctx, UID)
+    assert lang == "en"
+    assert "invest" in prompt
+
+
+def test_voice_hallucination_guard_on_deck(fresh_db, monkeypatch):
+    """Карточка ждёт слово, Whisper принёс тираду (валлийский кейс) — «не расслышал»."""
+    monkeypatch.setattr(llm, "transcribe",
+                        lambda *a, **k: "Diolch yn fawr iawn am wylio'r fideo diolch")
+    sent = []
+
+    async def reply_text(text, reply_markup=None, parse_mode=None):
+        sent.append(text)
+
+    async def noop(*a, **k):
+        pass
+
+    voice = types.SimpleNamespace(duration=1, get_file=noop)
+
+    class _File:
+        async def download_as_bytearray(self):
+            return bytearray(b"x")
+
+    async def get_file():
+        return _File()
+
+    voice.get_file = get_file
+    message = types.SimpleNamespace(reply_text=reply_text, voice=voice,
+                                    chat=types.SimpleNamespace(send_action=noop))
+    update = types.SimpleNamespace(message=message,
+                                   effective_user=types.SimpleNamespace(id=UID))
+    ctx = _deck_ctx(fresh_db, 1)
+    asyncio.run(bot.on_voice(update, ctx))
+    assert any("не расслышал" in s.lower() for s in sent)
+    assert not any("Ты написал" in s for s in sent)      # мусор не стал «попыткой»
 
 
 # ---------- чистка ```-заборов в человеческом отчёте ИТОГ ----------

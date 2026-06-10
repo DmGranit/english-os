@@ -552,10 +552,26 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _process_user_text(update, ctx, _learner(update), update.message.text)
 
+def _deck_card(ctx):
+    """Активная карточка колоды: (word, box) или (None, None). Свежесть < 10 мин."""
+    ud = ctx.user_data
+    queue = ud.get("review_queue") or []
+    pos = ud.get("review_pos", 0)
+    if pos < len(queue) and time.time() - ud.get("card_shown_at", 0) < 600:
+        wid = queue[pos]
+        return db.get_word(wid), ud.get("review_box", {}).get(wid, 1)
+    return None, None
+
 def _stt_hints(ctx, uid):
-    """Подсказки Whisper (A7): в разговорных режимах человек говорит по-английски —
-    жёсткий language=en (без него акцент уводит автоопределение в чужой язык);
-    prompt — слова в работе, чтобы именно их Whisper слышал правильно."""
+    """Подсказки Whisper (A7). Во время колоды язык ответа известен ТОЧНО:
+    box 1 ждёт русский перевод, box 2+ — английское слово; ожидаемое слово
+    уходит в prompt (на 1-секундных клипах без подсказки Whisper галлюцинирует —
+    валлийский кейс). Вне колоды: разговорные режимы — en, prompt — слова в работе."""
+    word, box = _deck_card(ctx)
+    if word:
+        if box == 1:
+            return "ru", word["ru"]
+        return "en", word["word"]
     lang = "en" if _mode(ctx) in ("scenario", "flow") else None
     focus = ", ".join(w["word"] for w in db.learning_words(uid)) or None
     return lang, focus
@@ -582,6 +598,11 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = await asyncio.to_thread(llm.transcribe, bytes(buf), language=lang, prompt=focus)
     if not text:
         await update.message.reply_text("🎤 Не расслышал. Повтори голосом или напиши текстом.")
+        return
+    card, _ = _deck_card(ctx)
+    if card and len(text.split()) > 5:        # карточка ждёт слово, пришла тирада —
+        await update.message.reply_text(      # это галлюцинация Whisper, не ответ
+            "🎤 Кажется, не расслышал. Скажи одно слово-ответ ещё раз — или напиши текстом.")
         return
     await update.message.reply_text(f"🗣 You said: {text}")
     await _process_user_text(update, ctx, uid, text)
