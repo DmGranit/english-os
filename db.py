@@ -751,16 +751,22 @@ def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None):
     return {"word_id": word_id, "box": box, "status": status, "next_review": nxt}
 
 def variant_stats(user_id=DEFAULT_USER):
-    """Сводка по A/B: точность и среднее время ответа по вариантам карточки.
-    Это шина для будущей проверки «слои vs плоско», а не само доказательство."""
+    """Сводка A/B с атрибуцией к КОДИРОВАНИЮ: сеть показывается при раскрытии ответа,
+    значит влияет на СЛЕДУЮЩЕЕ вспоминание слова — результат повторения относим к
+    варианту предыдущего показа. Первое повторение слова (нет прошлого показа) не участвует.
+    Это шина для проверки «слои vs плоско», а не само доказательство."""
     with _conn() as c:
-        rows = c.execute("""SELECT variant,
+        rows = c.execute("""SELECT prev.variant variant,
                                    COUNT(*) n,
-                                   SUM(remembered) ok,
-                                   AVG(ms) avg_ms
-                            FROM reviews
-                            WHERE user_id=? AND variant IS NOT NULL
-                            GROUP BY variant""", (user_id,)).fetchall()
+                                   SUM(cur.remembered) ok,
+                                   AVG(cur.ms) avg_ms
+                            FROM reviews cur
+                            JOIN reviews prev ON prev.id =
+                              (SELECT MAX(p.id) FROM reviews p
+                               WHERE p.user_id=cur.user_id AND p.word_id=cur.word_id
+                                 AND p.id < cur.id)
+                            WHERE cur.user_id=? AND prev.variant IS NOT NULL
+                            GROUP BY prev.variant""", (user_id,)).fetchall()
     out = []
     for r in rows:
         n = r["n"] or 0

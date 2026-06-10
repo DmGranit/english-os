@@ -15,7 +15,7 @@ English OS — каркас телеграм-бота.
 Что осознанно оставлено как TODO (помечено ниже):
     - парсинг свободного ввода «Учим X, Y» в режим+слова (или только кнопки)
 """
-import os, json, re, time, asyncio, datetime, logging, types, urllib.parse
+import os, json, re, time, asyncio, datetime, logging, types, urllib.parse, zlib
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, ReplyKeyboardRemove,
                       BotCommand, BotCommandScopeChat)
@@ -449,8 +449,8 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         ctx.user_data["review_pos"]   = 0      # на какой карточке стоим
         ctx.user_data["review_ok"]    = 0      # счётчик «вспомнил»
         ctx.user_data["review_fail"]  = 0      # счётчик «забыл»
-        ctx.user_data["card_shown_at"] = time.time()   # старт замера time-on-task
-        text, kb = _card_payload(ctx)          # показать первую карточку
+        ctx.user_data["card_shown_at"] = time.time()   # старт замера времени recall
+        text, kb = _card_payload(ctx, uid)     # показать первую карточку
         await out(text, kb)
 
     else:  # scenario / flow — диалог: клавиатура с экрана убирается целиком,
@@ -656,10 +656,11 @@ def _review_kb(reveal):
         InlineKeyboardButton("❌ Забыл", callback_data="rev:fail"),
     ]])
 
-def _variant(word_id):
-    """A/B-назначение карточки (детерминированно по слову): чётные — layered, нечётные — flat.
-    Инструментовка для будущей проверки «сеть vs плоско», не само доказательство."""
-    return "layered" if word_id % 2 == 0 else "flat"
+def _variant(user_id, word_id):
+    """A/B-назначение карточки: детерминированная рандомизация ПОЛЬЗОВАТЕЛЬ×СЛОВО
+    (crc32, не чётность id — она смешивала сложность конкретных слов с вариантом).
+    У каждого пользователя своя раскладка слов по layered/flat."""
+    return "layered" if zlib.crc32(f"{user_id}:{word_id}".encode()) & 1 == 0 else "flat"
 
 def _network_block(word):
     """Блок «сети» для layered-карточки: связи слова (проверенные данные из базы)."""
@@ -696,7 +697,7 @@ def _review_card_text(word, pos, total, reveal, productive, variant="layered"):
     block = ("\n" + _network_block(word)) if variant == "layered" else ""
     return f"{head}\n\n{answer}{block}\n\nТы вспомнил?"
 
-def _card_payload(ctx, reveal=False):
+def _card_payload(ctx, uid, reveal=False):
     """Текст и клавиатура текущей карточки очереди."""
     queue = ctx.user_data.get("review_queue", [])
     pos = ctx.user_data.get("review_pos", 0)
@@ -705,14 +706,14 @@ def _card_payload(ctx, reveal=False):
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
     productive = box >= db.PRODUCTIVE_FROM_BOX  # зрелое слово -> RU→EN; иначе EN→RU
     ctx.user_data["review_reveal"] = reveal
-    return (_review_card_text(word, pos + 1, len(queue), reveal, productive, _variant(wid)),
+    return (_review_card_text(word, pos + 1, len(queue), reveal, productive, _variant(uid, wid)),
             _review_kb(reveal))
 
-async def _show_card(q, ctx, reveal=False):
+async def _show_card(q, ctx, uid, reveal=False):
     """Показать текущую карточку очереди (правит то же сообщение)."""
     if not reveal:
-        ctx.user_data["card_shown_at"] = time.time()   # старт замера time-on-task
-    text, kb = _card_payload(ctx, reveal)
+        ctx.user_data["card_shown_at"] = time.time()   # старт замера времени recall
+    text, kb = _card_payload(ctx, uid, reveal)
     await q.edit_message_text(text, reply_markup=kb)
 
 async def _finish_review(q, ctx, uid):
@@ -742,15 +743,17 @@ async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == "show":                   # раскрыть ответ на той же карточке
-        await _show_card(q, ctx, reveal=True)
+        shown = ctx.user_data.get("card_shown_at")
+        if shown:                          # время recall: от вопроса ДО запроса ответа —
+            ctx.user_data["card_ms"] = int((time.time() - shown) * 1000)
+        await _show_card(q, ctx, uid, reveal=True)   # чтение ответа/сети в замер не входит
         return
 
     # action == ok | fail -> записать результат текущего слова
     word_id = queue[pos]
     remembered = (action == "ok")
-    shown = ctx.user_data.get("card_shown_at")
-    ms = int((time.time() - shown) * 1000) if shown else None     # time-on-task
-    db.review(word_id, remembered, uid, variant=_variant(word_id), ms=ms)  # ← цикл + инструментовка
+    ms = ctx.user_data.pop("card_ms", None)
+    db.review(word_id, remembered, uid, variant=_variant(uid, word_id), ms=ms)  # ← цикл + A/B
     db.adapt_band(uid)                          # тихо подстраиваем полосу по последним повторениям
     key = "review_ok" if remembered else "review_fail"
     ctx.user_data[key] = ctx.user_data.get(key, 0) + 1
@@ -759,7 +762,7 @@ async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ctx.user_data["review_pos"] >= len(queue):
         await _finish_review(q, ctx, uid)
     else:
-        await _show_card(q, ctx, reveal=False)
+        await _show_card(q, ctx, uid, reveal=False)
 
 # ---------- очередь новых слов на подтверждение (pending) ----------
 def _pending_card_text(item):
@@ -918,11 +921,12 @@ async def abstats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not stats:
         await update.message.reply_text("Пока нет данных A/B — поучись через «☀️ Повторение».")
         return
-    lines = ["🧪 A/B карточек (сеть vs плоско):\n"]
+    lines = ["🧪 A/B (сеть vs плоско) — точность СЛЕДУЮЩЕГО повторения\n"
+             "после сетевого/плоского показа (эффект кодирования):\n"]
     for s in stats:
         acc = f"{round(s['accuracy']*100)}%" if s["accuracy"] is not None else "—"
         ms = f"{s['avg_ms']} мс" if s["avg_ms"] is not None else "—"
-        lines.append(f"• {s['variant']}: n={s['n']}, точность {acc}, ср. время {ms}")
+        lines.append(f"• после {s['variant']}: n={s['n']}, точность {acc}, recall {ms}")
     lines.append("\n⚠️ Это направленный сигнал. Для вывода нужна когорта, не n=1.")
     await update.message.reply_text("\n".join(lines))
 
