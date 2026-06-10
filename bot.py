@@ -17,7 +17,8 @@ English OS — каркас телеграм-бота.
 """
 import os, json, re, time, asyncio, datetime, logging, types, urllib.parse
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
-                      ReplyKeyboardMarkup, BotCommand, BotCommandScopeChat)
+                      ReplyKeyboardMarkup, ReplyKeyboardRemove,
+                      BotCommand, BotCommandScopeChat)
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                           MessageHandler, TypeHandler, ApplicationHandlerStop,
                           ContextTypes, PicklePersistence, filters)
@@ -403,6 +404,8 @@ async def on_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = _learner(update)
 
     async def out(text, markup=None):                 # inline-путь правит то же сообщение
+        if isinstance(markup, ReplyKeyboardRemove):   # edit не умеет reply-маркапы
+            return await q.edit_message_text(text)
         return await q.edit_message_text(text, reply_markup=markup)
 
     await _enter_mode(out, ctx, uid, mode, tmsg=q.message)
@@ -445,11 +448,13 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         text, kb = _card_payload(ctx)          # показать первую карточку
         await out(text, kb)
 
-    else:  # scenario / flow
+    else:  # scenario / flow — диалог: клавиатура с экрана убирается целиком,
+           # вернётся сама с носителем после ИТОГа (one_time её прятал не до конца:
+           # Telegram показывал кнопки снова при закрытии системной клавиатуры)
         await out({
             "scenario": "🎭 Сценарий. Назови ситуацию (питч, переговоры, статус) — войду в роль.",
             "flow": "🗣️ Поток. Просто общаемся на английском — пиши или говори голосом.",
-        }[mode])
+        }[mode], ReplyKeyboardRemove())
 
 # ---------- обычное сообщение (текст и голос идут одним путём) ----------
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
