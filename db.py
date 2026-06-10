@@ -15,7 +15,10 @@ DB_PATH = os.environ.get("ENGLISH_OS_DB", "english_os.db")
 DEFAULT_USER = 1                      # пока один пользователь; user_id заложен на вырост
 DAILY_NEW_CAP = int(os.environ.get("NEW_CAP", "7"))   # дневная норма новых слов (настраивается NEW_CAP)
 INTERVALS = {1: 1, 2: 3, 3: 7, 4: 14, 5: 30}   # Лейтнер, как в исходном файле
+MAINTENANCE_DAYS = 90     # known-слова возвращаются на «проверку выживания» (канон Ч.1:
+                          # без извлечения след угасает; can-do-прокси не должен врать)
 PRODUCTIVE_FROM_BOX = 3   # box 1–2: узнавание EN→RU (recog); box 3+: продукция RU→EN (prod)
+NATION_TARGET = 3000      # ориентир покрытия: ~3000 семей слов ≈ 95% текстов (Nation)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS content (
@@ -702,13 +705,14 @@ def start_learning(ids, user_id=DEFAULT_USER):
                       (today, today, today, user_id, wid))
 
 def due_today(user_id=DEFAULT_USER):
-    """Слова к повторению: learning/forgot с next_review<=сегодня. Самые просроченные первыми."""
+    """Слова к повторению: learning/forgot + созревшие known (maintenance) с
+    next_review<=сегодня. Самые просроченные первыми."""
     today = _today()
     with _conn() as c:
         rows = c.execute("""SELECT c.*, s.status AS s_status, s.box AS s_box,
                                    s.next_review AS s_next
                             FROM state s JOIN content c USING(word_id)
-                            WHERE s.user_id=? AND s.status IN ('learning','forgot')
+                            WHERE s.user_id=? AND s.status IN ('learning','forgot','known')
                               AND s.next_review IS NOT NULL AND s.next_review<=?
                             ORDER BY s.next_review ASC, c.priority DESC""",
                          (user_id, today)).fetchall()
@@ -728,12 +732,15 @@ def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None):
         box = r["box"] or 1
         direction = "prod" if box >= PRODUCTIVE_FROM_BOX else "recog"   # по box ДО обновления
         if remembered:
+            already_known = box == 5            # maintenance: слово уже было «выучено»
             box = min(box + 1, 5)
             status = "known" if box == 5 else "learning"
+            days = MAINTENANCE_DAYS if already_known else INTERVALS[box]
         else:
             box = 1
             status = "forgot"
-        nxt = (datetime.date.today() + datetime.timedelta(days=INTERVALS[box])).isoformat()
+            days = INTERVALS[1]
+        nxt = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
         c.execute("""UPDATE state SET box=?, status=?, last_review=?, next_review=?
                      WHERE user_id=? AND word_id=?""",
                   (box, status, today, nxt, user_id, word_id))
@@ -936,6 +943,28 @@ CANDO = [
     {"id": "brainstorm","level": "B2", "scenario": "Brainstorm",
      "ru": "Могу участвовать в мозговом штурме и предлагать идеи"},
 ]
+
+def progress_summary(user_id=DEFAULT_USER):
+    """Сводка пути для /progress (вторична к can-do, канон Ч.5): числа показывают
+    дорогу к покрытию (Nation), а не трофеи."""
+    with _conn() as c:
+        mastered = c.execute("""SELECT COUNT(*) FROM state
+                                WHERE user_id=? AND (status='known' OR box>=3)""",
+                             (user_id,)).fetchone()[0]
+        learning = c.execute("""SELECT COUNT(*) FROM state
+                                WHERE user_id=? AND status IN ('learning','forgot') AND box<3""",
+                             (user_id,)).fetchone()[0]
+        new = c.execute("SELECT COUNT(*) FROM state WHERE user_id=? AND status='new'",
+                        (user_id,)).fetchone()[0]
+        sessions = c.execute("SELECT COUNT(*) FROM sessions WHERE user_id=?",
+                             (user_id,)).fetchone()[0]
+        first = c.execute("""SELECT MIN(d) FROM (
+                               SELECT MIN(date) d FROM sessions WHERE user_id=?
+                               UNION ALL
+                               SELECT MIN(substr(ts,1,10)) d FROM reviews WHERE user_id=?)""",
+                          (user_id, user_id)).fetchone()[0]
+    return {"mastered": mastered, "learning": learning, "new": new,
+            "sessions": sessions, "since": first, "nation_target": NATION_TARGET}
 
 def cando_progress(user_id=DEFAULT_USER, ready_ratio=0.6):
     """Прогресс по can-do: доля освоенных (known/box>=3) слов в сценарии каждого пункта.

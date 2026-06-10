@@ -865,12 +865,21 @@ async def mistakes_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------- измеримость: /progress (CEFR can-do) ----------
 async def progress_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/progress — прогресс по деловым can-do (CEFR-стиль). Прокси по словарю, не сертификат."""
-    rows = db.cando_progress(_learner(update))
+    uid = _learner(update)
+    rows = db.cando_progress(uid)
     lines = ["📈 Что ты уже можешь (по освоенным словам сценария):\n"]
     for r in rows:
         mark = "✅" if r["ready"] else ("▶" if r["mastered"] else "·")
         lines.append(f"{mark} [{r['level']}] {r['ru']} — {r['mastered']}/{r['total']}")
     lines.append("\n⚠️ Это ориентир по словарю, а не официальная оценка CEFR.")
+    s = db.progress_summary(uid)            # сводка пути — вторична к can-do (канон Ч.5)
+    path = (f"\n🛤 Путь: освоено {s['mastered']} узлов · в работе {s['learning']} · "
+            f"впереди в базе {s['new']}\n"
+            f"Ориентир покрытия — ~{s['nation_target']} семей слов (Nation). "
+            f"Числа — дорога, мера умения — список выше.")
+    if s["sessions"]:
+        path += f"\nЗанятий: {s['sessions']}" + (f" · с {s['since']}" if s["since"] else "")
+    lines.append(path)
     await update.message.reply_text("\n".join(lines))
 
 # ---------- A/B-инструментовка: /abstats ----------
