@@ -217,6 +217,7 @@ async def _finish_session(ud, uid, send):
     ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
     ud["mode"] = "flow"                            # роль снята: следующий текст — просто разговор
     ud.pop("scn_words", None)                      # целевые слова сессии больше не грунтуются
+    ud.pop("typed_wid", None)                      # незакрытая typed-карточка снята
     for p in _chunks(reply):                       # отчёт может не влезть в одно сообщение
         try:
             await send(_to_html(p), parse_mode="HTML")
@@ -601,6 +602,10 @@ async def _process_user_text(update, ctx, uid, text):
         await _route_button(update, ctx, uid, text)
         return
 
+    if ctx.user_data.get("typed_wid"):           # ждём напечатанный ответ карточки box 3
+        await _handle_typed_answer(update, ctx, uid, text)
+        return
+
     if len(text) > TEXT_MAX_LEN:                 # кап входа: токены модели не резиновые
         await update.message.reply_text(
             f"✂️ Слишком длинное сообщение ({len(text)} символов, максимум {TEXT_MAX_LEN}). "
@@ -825,6 +830,60 @@ def _network_block(word):
         lines.append(f"🧠 фрейм: {word['thinking_frame']}{extra}")
     return "\n".join(lines)
 
+# ---------- typed recall (box 3): ответ печатается, опечатка в одну правку прощается ----------
+def _one_edit_away(a, b):
+    """Равны или отличаются одной правкой (вставка/удаление/замена/перестановка
+    соседних букв — Дамерау) — допуск на опечатку."""
+    a, b = (a or "").lower().strip(), (b or "").lower().strip()
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):                       # перестановка соседних: invets ↔ invest
+        diffs = [k for k in range(len(a)) if a[k] != b[k]]
+        if (len(diffs) == 2 and diffs[1] == diffs[0] + 1
+                and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]]):
+            return True
+    if len(a) > len(b):
+        a, b = b, a
+    i = j = diff = 0
+    while i < len(a) and j < len(b):
+        if a[i] != b[j]:
+            diff += 1
+            if diff > 1:
+                return False
+            if len(a) == len(b):
+                i += 1
+            j += 1
+        else:
+            i += 1
+            j += 1
+    return True
+
+async def _handle_typed_answer(update, ctx, uid, text):
+    """Проверить напечатанный ответ карточки box 3: объективный зачёт вместо самооценки."""
+    wid = ctx.user_data.pop("typed_wid")
+    word = db.get_word(wid)
+    given = (text or "").strip()
+    exact = given.lower() == (word["word"] or "").lower()
+    near = not exact and _one_edit_away(given, word["word"])
+    ok = exact or near
+    shown = ctx.user_data.get("card_shown_at")
+    ms = int((time.time() - shown) * 1000) if shown else None
+    await _record_review(ctx, uid, wid, ok, ms)
+    if exact:
+        head = f"✅ Точно! {word['word']} — {word['ru']}"
+    elif near:
+        head = f"✅ Почти — засчитано! Правильно: {word['word']} (у тебя: {given})"
+    else:
+        head = f"❌ Это было «{word['word']}» — {word['ru']}"
+    ex = f"\n{word['example']}" if word.get("example") else ""
+    block = ("\n" + _network_block(word)) if _variant(uid, wid) == "layered" else ""
+    await update.message.reply_text(head + ex + block)
+    shim = types.SimpleNamespace(edit_message_text=update.message.reply_text,  # текстовый путь:
+                                 message=update.message)                       # «edit» = новое сообщение
+    await _next_card(shim, ctx, uid)
+
 # ---------- сборка SVOMPT (box 4): предложение из перемешанных слов ----------
 ASM_MIN, ASM_MAX = 4, 10    # пригодная длина примера в словах
 
@@ -889,6 +948,14 @@ def _card_payload(ctx, uid, reveal=False):
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
     productive = box >= db.PRODUCTIVE_FROM_BOX  # зрелое слово -> RU→EN; иначе EN→RU
     ctx.user_data["review_reveal"] = reveal
+    ctx.user_data.pop("typed_wid", None)        # карточка сменилась — ожидание ввода снято
+    if not reveal and box == 3:                 # box 3: продукция вводом текста (объективно)
+        ctx.user_data["typed_wid"] = wid
+        return ((f"🔁 Повторение · карточка {pos + 1}/{len(queue)}\n\n"
+                 f"✍️ Как сказать по-английски:\n«{word['ru']}»  ({word['dna_idea']})\n\n"
+                 f"Напиши ответ сообщением."),
+                InlineKeyboardMarkup([[InlineKeyboardButton("🤷 Не помню",
+                                                            callback_data="rev:fail")]]))
     if not reveal and box == 4:                 # box 4: сборка SVOMPT (объективная проверка)
         toks = _asm_tokens(word.get("example"))
         if toks:
@@ -949,6 +1016,7 @@ async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _record_review(ctx, uid, word_id, remembered, ms):
     """Записать результат карточки (SRS + A/B + полоса + счётчики сессии)."""
+    ctx.user_data.pop("typed_wid", None)        # «Не помню» и любой исход снимают ожидание
     db.review(word_id, remembered, uid, variant=_variant(uid, word_id), ms=ms)
     db.adapt_band(uid)                          # тихо подстраиваем полосу
     key = "review_ok" if remembered else "review_fail"
