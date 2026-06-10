@@ -18,5 +18,9 @@ secrets*
 .pytest_cache/
 .pytest_tmp/
 
+# одноразовый осмотр/отладка — не возвращать в репо
+.live_check.db
+_inspect_*.py
+
 # прочее
 *.log

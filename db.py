@@ -387,11 +387,14 @@ def idea_list():
             """SELECT dna_idea, COUNT(*) n FROM content
                WHERE dna_idea IS NOT NULL AND dna_idea<>'' GROUP BY dna_idea ORDER BY n DESC""").fetchall()]
 
-def scenario_list():
+def scenario_list(min_n=5):
+    """Сценарии для меню «Темы». Огрызки (< min_n слов) не показываем —
+    пустая полка хуже её отсутствия; слова при этом остаются доступны в учёбе."""
     with _conn() as c:
         return [(r["scenario"], r["n"]) for r in c.execute(
             """SELECT scenario, COUNT(*) n FROM content
-               WHERE scenario IS NOT NULL AND scenario<>'' GROUP BY scenario ORDER BY n DESC""").fetchall()]
+               WHERE scenario IS NOT NULL AND scenario<>'' GROUP BY scenario
+               HAVING n >= ? ORDER BY n DESC""", (min_n,)).fetchall()]
 
 def theme_words(axis, value, user_id=DEFAULT_USER, n=5):
     """Слова темы (axis 'idea'|'scn'): сначала ещё не введённые (new), потом любые."""

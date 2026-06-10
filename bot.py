@@ -15,13 +15,15 @@ English OS — каркас телеграм-бота.
 Что осознанно оставлено как TODO (помечено ниже):
     - парсинг свободного ввода «Учим X, Y» в режим+слова (или только кнопки)
 """
-import os, json, re, time, asyncio, datetime
+import os, json, re, time, asyncio, datetime, logging, types
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
-                      BotCommand, BotCommandScopeChat)
+                      ReplyKeyboardMarkup, BotCommand, BotCommandScopeChat)
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                           MessageHandler, TypeHandler, ApplicationHandlerStop,
                           ContextTypes, filters)
 import db, prompts, llm, enrich
+
+log = logging.getLogger("english_os")
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CONTENT_USER = db.DEFAULT_USER   # общий пул контента и очереди pending (его наполняют seed.py/enrich.py)
@@ -34,6 +36,7 @@ OWNER_ID = int(os.environ["OWNER_ID"]) if os.environ.get("OWNER_ID", "").strip()
 SMART_MODEL = os.environ.get("SMART_MODEL", "gpt-4o")
 SMART_MODES = {"scenario", "flow"}
 _REMINDER_TASK = None   # держим ссылку на фоновый цикл напоминаний
+_IDLE_TASK = None       # фоновый цикл авто-ИТОГа по неактивности
 
 def _learner(update):
     """Telegram-id пользователя: у каждого свой прогресс (общий только контент)."""
@@ -70,6 +73,60 @@ def _extract_summary(text):
     clean = (text[:m.start()] + text[m.end():]).strip()
     return data, clean
 
+# ---------- завершение сессии (общая точка: «Закончили», кнопка «🏁 Итог», авто-ИТОГ) ----------
+END_WORDS = {"закончили", "отчёт", "отчет", "стоп", "итог", "🏁 итог"}
+IDLE_SUMMARY_SEC = 25 * 60   # тишина, после которой сессия сводится автоматически
+
+END_PROMPT = ("<КОНЕЦ СЕССИИ> Заверши занятие: дай человеческий отчёт ИТОГ, а в самом конце — "
+              "машинный JSON-блок (reviewed/add/errors). Не переводи это сообщение и не проси повторить.")
+
+async def _finish_session(ud, uid, send):
+    """Свести сессию: ИТОГ от модели -> запись в базу -> отчёт через send(text).
+    ud — user_data пользователя (история/режим). История после сведения очищается."""
+    if not ud.get("history"):                      # пустая сессия — LLM не дёргаем
+        await send("Пока нечего подводить — мы ещё не общались в этой сессии 🙂 "
+                   "Напиши пару фраз или нажми ☀️ Повторить.")
+        return
+    ctx = types.SimpleNamespace(user_data=ud)      # _call работает только с user_data
+    reply = await _call(ctx, ud.get("mode", "flow"), uid, END_PROMPT, with_summary=True)
+    data, reply = _extract_summary(reply)
+    if data:
+        r = db.apply_session_summary(data, uid)
+        reply += (f"\n\n— записано в базу: повторений {r['ok'] + r['fail']} "
+                  f"(✅ {r['ok']} / ❌ {r['fail']}), новых слов в очередь: {r['added']}"
+                  f", структурных ошибок: {r.get('errors', 0)}")
+    db.backup()
+    ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
+    await send(reply)
+
+def _idle_users(user_data, now=None, idle_sec=IDLE_SUMMARY_SEC):
+    """Кому пора авто-ИТОГ: есть несведённый диалог и тишина >= idle_sec."""
+    now = time.time() if now is None else now
+    return [uid for uid, ud in user_data.items()
+            if ud.get("history") and now - ud.get("last_seen", now) >= idle_sec]
+
+# ---------- постоянная клавиатура управления ----------
+BTN_NEW, BTN_REVIEW = "🌅 Новые", "☀️ Повторить"
+BTN_SCEN, BTN_READ = "🎭 Сценарий", "📖 Читать"
+BTN_END, BTN_PROG = "🏁 Итог", "📈 Прогресс"
+MAIN_KB = ReplyKeyboardMarkup(
+    [[BTN_NEW, BTN_REVIEW], [BTN_SCEN, BTN_READ], [BTN_END, BTN_PROG]],
+    resize_keyboard=True, is_persistent=True)
+MAIN_BUTTONS = {BTN_NEW, BTN_REVIEW, BTN_SCEN, BTN_READ, BTN_PROG}  # BTN_END ловится END_WORDS
+
+async def _route_button(update, ctx, uid, label):
+    """Кнопка постоянной клавиатуры -> то же действие, что inline/команда."""
+    m = update.message
+    async def out(text, markup=None):
+        return await m.reply_text(text, reply_markup=markup)
+    if label == BTN_PROG:
+        await progress_cmd(update, ctx)
+    elif label == BTN_READ:
+        await read_cmd(update, ctx)
+    else:
+        mode = {BTN_NEW: "new", BTN_REVIEW: "review", BTN_SCEN: "scenario"}[label]
+        await _enter_mode(out, ctx, uid, mode, tmsg=m)
+
 # ---------- /start ----------
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = _learner(update)
@@ -77,26 +134,18 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not db.is_onboarded(uid):                  # новый пользователь -> онбординг
         await _begin_onboarding(update, ctx)
         return
-    # вернувшийся: один ведущий CTA по самому нужному действию + полное меню ниже
+    # вернувшийся: ведущий CTA по самому нужному действию; управление — постоянной клавиатурой
     due, _ = db.due_today(uid)
     n_due = len(due)
-    rows = []
     if n_due:
-        rows.append([InlineKeyboardButton(f"☀️ Повторить ({n_due})", callback_data="mode:review")])
-        lead = f"С возвращением! 👋\nСегодня {n_due} слов(а) ждут повторения — закрепим?"
+        lead = f"С возвращением! 👋\nСегодня {n_due} слов(а) ждут повторения — жми ☀️ Повторить."
     elif db.new_remaining(uid):
-        rows.append([InlineKeyboardButton("🌅 Учить новые", callback_data="mode:new")])
-        lead = "С возвращением! 👋\nПовторять нечего ✅ — берём новые слова?"
+        lead = "С возвращением! 👋\nПовторять нечего ✅ — бери 🌅 Новые."
     else:
-        lead = "С возвращением! 👋\nВсё повторено, новых пока нет — поболтаем, тема или /read?"
-    rows += [
-        [InlineKeyboardButton("🌅 Новые", callback_data="mode:new"),
-         InlineKeyboardButton("☀️ Повторение", callback_data="mode:review")],
-        [InlineKeyboardButton("🎭 Сценарий", callback_data="mode:scenario"),
-         InlineKeyboardButton("🗣️ Поток", callback_data="mode:flow")],
-        [InlineKeyboardButton("📚 Темы (учить по теме)", callback_data="topics")],
-    ]
-    await update.message.reply_text(lead, reply_markup=InlineKeyboardMarkup(rows))
+        lead = ("С возвращением! 👋\nВсё повторено, новых пока нет — поболтаем? "
+                "Просто пиши на английском, темы — /topics, чтение — 📖 Читать.")
+    await update.message.reply_text(
+        lead + "\n\nКнопки управления — снизу 👇 Справка: /help", reply_markup=MAIN_KB)
 
 # ---------- онбординг: органичный само-выбор темпа (БЕЗ присвоения уровня) ----------
 _PACE = {"A2": "🌱 С самых основ", "B1": "🚶 Уже кое-что знаю", "B2": "🏃 Уверенно общаюсь"}
@@ -129,22 +178,50 @@ async def on_pace(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Отлично, начнём отсюда. 🎯\n"
         f"Первые слова: {starter}.\n\n"
         "Дальше я сам подстроюсь под тебя: пойдёт легко — добавлю посложнее; будет трудно — притормозим.\n"
-        "Жми /start (меню), пиши «учим <слово>», говори голосом или /read для чтения. "
-        "Сменить темп — /pace.")
+        "Пиши «учим <слово>», говори голосом или жми 📖 Читать. Сменить темп — /pace.")
+    await q.message.reply_text("Кнопки управления — снизу 👇 Справка: /help", reply_markup=MAIN_KB)
+
+async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/help — как пользоваться ботом (все ритуалы наглядно)."""
+    await update.message.reply_text(
+        "🧭 КАК ПОЛЬЗОВАТЬСЯ\n\n"
+        "Кнопки снизу:\n"
+        f"🌅 Новые — слова дня (до {db.DAILY_NEW_CAP} в день)\n"
+        "☀️ Повторить — карточки, когда пора повторять\n"
+        "🎭 Сценарий — ролевая игра: питч, переговоры, собеседование\n"
+        "📖 Читать — короткий текст под твой уровень\n"
+        "🏁 Итог — закончить занятие и записать прогресс\n"
+        "📈 Прогресс — что ты уже можешь\n\n"
+        "А ещё:\n"
+        "• просто пиши на английском — отвечу и мягко поправлю;\n"
+        "• голосовые понимаю 🎤;\n"
+        "• «учим invest, traction» — разберу эти слова;\n"
+        "• замолчишь на 25 минут — сам подведу итог сессии.\n\n"
+        "Команды: /topics темы · /mistakes мои ошибки · /pace темп · "
+        "/remind напоминания · /add слова в очередь",
+        reply_markup=MAIN_KB)
 
 async def pace_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/pace — выбрать темп заново (без оценки уровня)."""
     await update.message.reply_text(
         "С каким темпом продолжить? Это не оценка — подстроюсь.", reply_markup=_pace_kb())
 
-# ---------- переключение режима кнопкой ----------
+# ---------- переключение режима (inline-кнопка и постоянная клавиатура) ----------
 async def on_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     mode = q.data.split(":")[1]
+    uid = _learner(update)
+
+    async def out(text, markup=None):                 # inline-путь правит то же сообщение
+        return await q.edit_message_text(text, reply_markup=markup)
+
+    await _enter_mode(out, ctx, uid, mode, tmsg=q.message)
+
+async def _enter_mode(out, ctx, uid, mode, tmsg=None):
+    """Вход в режим. out(text, markup) — способ показа: edit (inline) или reply (клавиатура)."""
     ctx.user_data["mode"] = mode
     ctx.user_data["history"] = []
-    uid = _learner(update)
     db.ensure_user_state(uid)            # новый ученик / новые слова получают state
 
     if mode == "new":
@@ -152,32 +229,34 @@ async def on_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not words:
             if db.new_remaining(uid) == 0:
                 msg = ("🎉 Ты прошёл все новые слова базы! Пока добавить нечего — "
-                       "закрепляем: жми ☀️ Повторение или 📖 /read.")
+                       "закрепляем: жми ☀️ Повторить или 📖 Читать.")
             else:
                 msg = (f"На сегодня дневная норма новых слов уже взята "
                        f"(по {db.DAILY_NEW_CAP}/день — так мозг усваивает лучше, без лавины повторений). "
-                       f"Давай закрепим: ☀️ Повторение или 📖 /read. Новые — завтра 🌙")
-            await q.edit_message_text(msg)
+                       f"Давай закрепим: ☀️ Повторить или 📖 Читать. Новые — завтра 🌙")
+            await out(msg)
             return
         seed = ("Познакомь КРАТКО с новыми словами на сегодня: слово — перевод, 1 живой пример, "
                 "1 коллокация. Без разбора корней/слоёв (это под кнопкой 🔍). "
                 "В конце предложи составить свою фразу.\n" + db.format_for_agent(words))
-        await _ask(q, ctx, mode, seed, uid, markup=_deep_kb(words))
+        await _ask(out, ctx, mode, seed, uid, markup=_deep_kb(words), tmsg=tmsg)
 
     elif mode == "review":
         due, st = db.due_today(uid)
         if not due:
-            await q.edit_message_text("На сегодня повторять нечего ✅")
+            await out("На сегодня повторять нечего ✅")
             return
         ctx.user_data["review_queue"] = [w["word_id"] for w in due]  # очередь слов
         ctx.user_data["review_box"]   = {wid: st[wid]["box"] for wid in st}  # box -> направление
         ctx.user_data["review_pos"]   = 0      # на какой карточке стоим
         ctx.user_data["review_ok"]    = 0      # счётчик «вспомнил»
         ctx.user_data["review_fail"]  = 0      # счётчик «забыл»
-        await _show_card(q, ctx)               # показать первую карточку
+        ctx.user_data["card_shown_at"] = time.time()   # старт замера time-on-task
+        text, kb = _card_payload(ctx)          # показать первую карточку
+        await out(text, kb)
 
     else:  # scenario / flow
-        await q.edit_message_text({
+        await out({
             "scenario": "🎭 Сценарий. Назови ситуацию (питч, переговоры, статус) — войду в роль.",
             "flow": "🗣️ Поток. Просто общаемся на английском — пиши или говори голосом.",
         }[mode])
@@ -203,22 +282,17 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _process_user_text(update, ctx, uid, text)
 
 async def _process_user_text(update, ctx, uid, text):
-    await _typing(update.message)                 # «печатает…», пока ИИ думает
-    # команды завершения сессии -> ИТОГ + бэкап
-    if text.strip().lower() in ("закончили", "отчёт", "отчет", "стоп"):
-        end = ("<КОНЕЦ СЕССИИ> Заверши занятие: дай человеческий отчёт ИТОГ, а в самом конце — "
-               "машинный JSON-блок (reviewed/add/errors). Не переводи это сообщение и не проси повторить.")
-        reply = await _call(ctx, _mode(ctx), uid, end, with_summary=True)
-        data, reply = _extract_summary(reply)         # отделить машинный блок от текста
-        if data:
-            r = db.apply_session_summary(data, uid)   # записать в reviews / pending / errors
-            reply += (f"\n\n— записано в базу: повторений {r['ok'] + r['fail']} "
-                      f"(✅ {r['ok']} / ❌ {r['fail']}), новых слов в очередь: {r['added']}"
-                      f", структурных ошибок: {r.get('errors', 0)}")
-        db.backup()
-        await update.message.reply_text(reply)
+    # завершение сессии: слово-триггер или кнопка «🏁 Итог»
+    if text.strip().lower() in END_WORDS:
+        await _typing(update.message)
+        await _finish_session(ctx.user_data, uid, update.message.reply_text)
         return
 
+    if text in MAIN_BUTTONS:                     # постоянная клавиатура
+        await _route_button(update, ctx, uid, text)
+        return
+
+    await _typing(update.message)                 # «печатает…», пока ИИ думает
     targets = _parse_learn_intent(text)          # «учим X, Y» -> разбор по графу
     if targets:
         await _teach_words(update, ctx, uid, targets)
@@ -345,15 +419,17 @@ async def _call(ctx, mode, uid, user_text, with_summary=False):
     _remember(hist, "assistant", reply)
     return reply
 
-async def _ask(q, ctx, mode, seed_text, uid, markup=None):
-    """Первый ход режима: положить данные слов как user-сообщение и получить разбор."""
+async def _ask(out, ctx, mode, seed_text, uid, markup=None, tmsg=None):
+    """Первый ход режима: положить данные слов как user-сообщение и получить разбор.
+    out(text, markup) — способ показа; tmsg — сообщение чата для индикатора «печатает…»."""
     system = prompts.assemble(mode) + "\n\n" + db.learner_profile(uid)
     hist = ctx.user_data["history"]
     _remember(hist, "user", seed_text)
-    await _typing(q.message)
+    if tmsg:
+        await _typing(tmsg)
     reply = await asyncio.to_thread(llm.chat, system, hist)
     _remember(hist, "assistant", reply)
-    await q.edit_message_text(reply, reply_markup=markup)
+    await out(reply, markup)
 
 # ---------- режим повторения: карточки ----------
 def _review_kb(reveal):
@@ -406,21 +482,24 @@ def _review_card_text(word, pos, total, reveal, productive, variant="layered"):
     block = ("\n" + _network_block(word)) if variant == "layered" else ""
     return f"{head}\n\n{answer}{block}\n\nТы вспомнил?"
 
-async def _show_card(q, ctx, reveal=False):
-    """Показать текущую карточку очереди (правит то же сообщение)."""
+def _card_payload(ctx, reveal=False):
+    """Текст и клавиатура текущей карточки очереди."""
     queue = ctx.user_data.get("review_queue", [])
     pos = ctx.user_data.get("review_pos", 0)
     wid = queue[pos]
     word = db.get_word(wid)
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
     productive = box >= PRODUCTIVE_FROM_BOX     # зрелое слово -> RU→EN; иначе EN→RU
+    ctx.user_data["review_reveal"] = reveal
+    return (_review_card_text(word, pos + 1, len(queue), reveal, productive, _variant(wid)),
+            _review_kb(reveal))
+
+async def _show_card(q, ctx, reveal=False):
+    """Показать текущую карточку очереди (правит то же сообщение)."""
     if not reveal:
         ctx.user_data["card_shown_at"] = time.time()   # старт замера time-on-task
-    ctx.user_data["review_reveal"] = reveal
-    await q.edit_message_text(
-        _review_card_text(word, pos + 1, len(queue), reveal, productive, _variant(wid)),
-        reply_markup=_review_kb(reveal),
-    )
+    text, kb = _card_payload(ctx, reveal)
+    await q.edit_message_text(text, reply_markup=kb)
 
 async def _finish_review(q, ctx, uid):
     """Колода кончилась: показать итог и сделать бэкап базы."""
@@ -622,12 +701,20 @@ async def on_branch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def _guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Пускаем только разрешённые Telegram-id (если ALLOWED_USERS задан). Иначе — стоп."""
     u = update.effective_user
+    if update.callback_query:
+        log.info("update: user=%s callback=%s", u.id if u else "?", update.callback_query.data)
+    elif update.message:
+        kind = "voice" if update.message.voice else "text"
+        log.info("update: user=%s %s=%r", u.id if u else "?", kind,
+                 (update.message.text or "")[:80])
     if ALLOWED_USERS and (u is None or u.id not in ALLOWED_USERS):
         if update.callback_query:
             await update.callback_query.answer("⛔ Доступ закрыт", show_alert=True)
         elif update.message:
             await update.message.reply_text("⛔ Этот бот персональный. Доступ закрыт.")
         raise ApplicationHandlerStop
+    if u is not None:
+        ctx.user_data["last_seen"] = time.time()   # пульс активности — для авто-ИТОГа
 
 # ---------- /add: добавить встреченные слова в очередь на изучение ----------
 async def add_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -684,10 +771,27 @@ async def _reminder_loop(app):
                 except Exception:
                     pass
 
+async def _idle_loop(app):
+    """Раз в минуту: сессии с диалогом, молчащие IDLE_SUMMARY_SEC, сводим авто-ИТОГом."""
+    while True:
+        await asyncio.sleep(60)
+        for uid in _idle_users(app.user_data):
+            ud = app.user_data[uid]
+
+            async def send(text, _uid=uid):
+                await app.bot.send_message(
+                    _uid, "🕐 Тишина 25 минут — подвожу итог сессии.\n\n" + text)
+
+            try:
+                await _finish_session(ud, uid, send)
+            except Exception:
+                log.exception("auto-summary failed for user=%s", uid)
+
 async def _post_init(app):
     """Меню команд (учебное — всем; админское — только владельцу) + цикл напоминаний."""
     learner = [
         BotCommand("start", "меню и начало"),
+        BotCommand("help", "как пользоваться"),
         BotCommand("read", "чтение под мой уровень"),
         BotCommand("progress", "мой прогресс"),
         BotCommand("mistakes", "мои частые ошибки"),
@@ -701,8 +805,9 @@ async def _post_init(app):
         await app.bot.set_my_commands(
             learner + [BotCommand("pending", "очередь новых слов (админ)")],
             scope=BotCommandScopeChat(chat_id=OWNER_ID))
-    global _REMINDER_TASK
+    global _REMINDER_TASK, _IDLE_TASK
     _REMINDER_TASK = asyncio.create_task(_reminder_loop(app))   # ссылка в глобале -> не соберётся GC
+    _IDLE_TASK = asyncio.create_task(_idle_loop(app))           # авто-ИТОГ по неактивности
 
 def main():
     if not TOKEN:
@@ -710,6 +815,7 @@ def main():
     app = Application.builder().token(TOKEN).post_init(_post_init).build()
     app.add_handler(TypeHandler(Update, _guard), group=-1)   # вахтёр: проверяется первым
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("pending", pending_cmd))
     app.add_handler(CommandHandler("mistakes", mistakes_cmd))
     app.add_handler(CommandHandler("read", read_cmd))

@@ -130,6 +130,19 @@ def test_summary_errors_logged_and_category_sanitized(fresh_db):
     assert pats == {"word_order": 1, "other": 1}            # мусорная категория -> other
 
 
+# ---------- темы: скрытие пустых сценариев ----------
+
+def test_scenario_list_hides_small_topics(fresh_db):
+    # в фикстуре: Pitching=2, Status update=1, Negotiating=1
+    assert fresh_db.scenario_list(min_n=2) == [("Pitching", 2)]
+    assert fresh_db.scenario_list(min_n=3) == []
+
+
+def test_scenario_list_min_one_shows_all(fresh_db):
+    names = {name for name, _ in fresh_db.scenario_list(min_n=1)}
+    assert names == {"Pitching", "Status update", "Negotiating"}
+
+
 def test_summary_empty_payload_is_noop(fresh_db):
     res = fresh_db.apply_session_summary({}, UID)
     assert res == {"ok": 0, "fail": 0, "added": 0, "skipped": 0, "errors": 0}

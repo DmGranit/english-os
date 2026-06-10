@@ -2,7 +2,9 @@
 Тонкая обёртка над LLM. Провайдер-агностична (OpenAI-совместимый формат по умолчанию).
 Ключ берётся из переменной окружения. Заполни MODEL под свой бюджет.
 """
-import os, json, urllib.request
+import os, json, logging, urllib.request
+
+log = logging.getLogger("english_os.llm")
 
 PROVIDER  = os.environ.get("LLM_PROVIDER", "openai")     # openai | anthropic
 MODEL     = os.environ.get("LLM_MODEL", "gpt-4o-mini")   # дешёвая модель для бота
@@ -42,6 +44,7 @@ def chat(system, messages, max_tokens=600, model=None):
             data = json.loads(r.read())
         return data["choices"][0]["message"]["content"]
     except Exception:
+        log.exception("LLM call failed (model=%s)", mdl)   # причина в лог, пользователю — мягко
         return "⚠️ Связь с ИИ сейчас недоступна. Попробуй ещё раз через минуту."
 
 
