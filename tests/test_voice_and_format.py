@@ -59,11 +59,11 @@ def _deck_ctx(fresh_db, box):
         "card_shown_at": _t.time()})
 
 
-def test_stt_hints_deck_box1_expects_russian(fresh_db):
-    ctx = _deck_ctx(fresh_db, 1)
+def test_stt_hints_deck_is_english(fresh_db):
+    # box 1 теперь выбор из 4 (не голос); любая голосовая карточка ждёт английское слово
+    ctx = _deck_ctx(fresh_db, 2)
     lang, prompt = bot._stt_hints(ctx, UID)
-    assert lang == "ru"                                  # ответ box1 — перевод по-русски
-    assert "инвестировать" in prompt                     # ожидаемое слово — в подсказку
+    assert lang == "en" and "invest" in prompt
 
 
 def test_stt_hints_deck_box3_expects_english(fresh_db):

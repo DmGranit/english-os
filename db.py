@@ -509,6 +509,30 @@ def frame_info(name):
         r = c.execute("SELECT name, ru, when_use, example FROM frame_ref WHERE name=?", (name,)).fetchone()
     return dict(r) if r else None
 
+def mcq_options(word_id, k=4):
+    """k вариантов для карточки-выбора box 1: верный + дистракторы из базы.
+    Дистракторы — сначала из той же DNA-идеи/уровня (смысловая близость = честная
+    проверка), потом добор любыми. Возвращает [{word_id, word, ru}], верный включён."""
+    w = get_word(word_id)
+    if not w:
+        return []
+    with _conn() as c:
+        near = c.execute("""SELECT word_id, word, ru FROM content
+                            WHERE word_id<>? AND ru IS NOT NULL AND ru<>''
+                              AND (dna_idea=? OR level=?)
+                            ORDER BY RANDOM() LIMIT ?""",
+                         (word_id, w["dna_idea"], w["level"], k - 1)).fetchall()
+        picked = [dict(r) for r in near]
+        if len(picked) < k - 1:                  # близких мало — добираем любыми
+            have = {r["word_id"] for r in picked} | {word_id}
+            qm = ",".join("?" * len(have))
+            more = c.execute(f"""SELECT word_id, word, ru FROM content
+                                 WHERE word_id NOT IN ({qm}) AND ru IS NOT NULL AND ru<>''
+                                 ORDER BY RANDOM() LIMIT ?""",
+                             (*have, k - 1 - len(picked))).fetchall()
+            picked += [dict(r) for r in more]
+    return picked + [{"word_id": word_id, "word": w["word"], "ru": w["ru"]}]
+
 def deep_view(word_id):
     """Глубокий разбор слова ИЗ ГРАФА (для кнопки «🔍 Глубже»): корень/семья/однокоренные/коллокации/фрейм.
     Детерминированно, без ИИ — progressive disclosure по тапу."""
