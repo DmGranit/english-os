@@ -606,6 +606,13 @@ async def _process_user_text(update, ctx, uid, text):
         await _handle_typed_answer(update, ctx, uid, text)
         return
 
+    queue = ctx.user_data.get("review_queue") or []
+    pos = ctx.user_data.get("review_pos", 0)
+    fresh = time.time() - ctx.user_data.get("card_shown_at", 0) < 600
+    if pos < len(queue) and fresh:               # идёт колода: текст = попытка ответа,
+        await _text_attempt_on_card(update, ctx, uid, text)   # а не повод для болтовни
+        return
+
     if len(text) > TEXT_MAX_LEN:                 # кап входа: токены модели не резиновые
         await update.message.reply_text(
             f"✂️ Слишком длинное сообщение ({len(text)} символов, максимум {TEXT_MAX_LEN}). "
@@ -860,6 +867,20 @@ def _one_edit_away(a, b):
             j += 1
     return True
 
+async def _text_attempt_on_card(update, ctx, uid, text):
+    """Кнопочная карточка + напечатанный ответ (естественный инстинкт): показываем
+    правильный ответ, отмечаем попытку, даём кнопки самооценки. Колода не бросается."""
+    queue, pos = ctx.user_data["review_queue"], ctx.user_data["review_pos"]
+    wid = queue[pos]
+    word = db.get_word(wid)
+    box = ctx.user_data.get("review_box", {}).get(wid, 1)
+    productive = box >= db.PRODUCTIVE_FROM_BOX
+    ctx.user_data["review_reveal"] = True
+    body = _review_card_text(word, pos + 1, len(queue), True, productive,
+                             _variant(uid, wid), box=box)
+    await update.message.reply_text(f"✍️ Ты написал: «{text.strip()}»\n\n{body}",
+                                    reply_markup=_review_kb(True))
+
 async def _handle_typed_answer(update, ctx, uid, text):
     """Проверить напечатанный ответ карточки box 3: объективный зачёт вместо самооценки."""
     wid = ctx.user_data.pop("typed_wid")
@@ -919,22 +940,21 @@ def _review_card_text(word, pos, total, reveal, productive, variant="layered", b
     ipa = f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else ""
     ex  = f"\nПример: {word['example']}" if word.get("example") else ""
     cloze = _cloze_for(word) if (not productive and box == 2) else None
+    hint = "Нажми «Показать ответ» — или просто напиши свой вариант сообщением."
     if productive:                                   # RU -> EN
         if not reveal:
             return (f"{head}\n\nКак сказать по-английски:\n«{word['ru']}»  ({word['dna_idea']})\n\n"
-                    f"Вспомни — потом нажми «Показать ответ».")
+                    f"{hint}")
         answer = f"«{word['ru']}»\n→ {word['word']}{ipa}{ex}"
     elif cloze:                                      # cloze: вставь слово в чанк
         if not reveal:
             return (f"{head}\n\nВставь слово в коллокацию:\n«{cloze}»  "
-                    f"(подсказка: {word['ru']})\n\n"
-                    f"Вспомни — потом нажми «Показать ответ».")
+                    f"(подсказка: {word['ru']})\n\n{hint}")
         answer = (f"«{cloze.replace('___', word['word'])}»\n"
                   f"→ {word['word']}{ipa} — {word['ru']}{ex}")
     else:                                            # EN -> RU (узнавание)
         if not reveal:
-            return (f"{head}\n\nЧто это значит:\n«{word['word']}»{ipa}\n\n"
-                    f"Вспомни перевод — потом нажми «Показать ответ».")
+            return (f"{head}\n\nЧто это значит:\n«{word['word']}»{ipa}\n\n{hint}")
         answer = f"«{word['word']}»\n→ {word['ru']}{ex}"
     block = ("\n" + _network_block(word)) if variant == "layered" else ""
     return f"{head}\n\n{answer}{block}\n\nТы вспомнил?"

@@ -103,6 +103,47 @@ def test_typed_advances_to_next_card(fresh_db, monkeypatch):
     assert any("deadline" in s for s in sent)            # следующая карточка пришла
 
 
+def test_text_during_button_card_is_answer_attempt(fresh_db, monkeypatch):
+    """Кнопочная карточка (box 1): напечатанный ответ НЕ уходит в LLM-диалог,
+    а показывает правильный ответ с кнопками самооценки (живой баг со скринов)."""
+    import llm
+    called = []
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: called.append(1) or "x")
+    ctx = _ctx([1], {1: 1})
+    ctx.user_data["card_shown_at"] = __import__("time").time()
+    bot._card_payload(ctx, UID)                          # вопрос показан
+    sent = []
+
+    async def reply_text(text, reply_markup=None, parse_mode=None):
+        sent.append((text, reply_markup))
+        return types.SimpleNamespace()
+
+    chat = types.SimpleNamespace(send_action=_noop)
+    message = types.SimpleNamespace(reply_text=reply_text, chat=chat, voice=None)
+    update = types.SimpleNamespace(message=message,
+                                   effective_user=types.SimpleNamespace(id=UID))
+    asyncio.run(bot._process_user_text(update, ctx, UID, "стоимость"))
+    assert called == []                                  # колода главнее болтовни
+    text, kb = sent[0]
+    assert "Ты написал" in text and "стоимость" in text
+    assert "инвестировать" in text                       # правильный ответ показан
+    btns = [b["callback_data"] for row in kb.to_dict()["inline_keyboard"] for b in row]
+    assert btns == ["rev:ok", "rev:fail"]                # самооценка тут же
+
+
+def test_stale_deck_does_not_intercept(fresh_db, monkeypatch):
+    """Брошенная вчера колода не превращает сегодняшний чат в «попытки ответа»."""
+    import llm
+    called = []
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: called.append(1) or "reply")
+    ctx = _ctx([1], {1: 1})
+    ctx.user_data["history"] = []
+    ctx.user_data["card_shown_at"] = 1000.0              # давным-давно
+    update, sent = _env()
+    asyncio.run(bot._process_user_text(update, ctx, UID, "hello there"))
+    assert called                                        # обычный диалог пошёл в LLM
+
+
 def test_itog_interrupts_typed_card(fresh_db, monkeypatch):
     import llm
     monkeypatch.setattr(llm, "chat", lambda *a, **k: "Отчёт.")
