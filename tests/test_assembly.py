@@ -104,7 +104,8 @@ def test_assembly_full_flow_records_objective_result(fresh_db, monkeypatch):
     # финал колоды редактирует сообщение и шлёт носитель — достаточно, что не упало
 
 
-def test_assembly_wrong_tap_counts_error(fresh_db, monkeypatch):
+def test_assembly_one_misclick_is_forgiven(fresh_db, monkeypatch):
+    """A3.2: один промах — прощается (мисклик не должен рушить зрелое слово)."""
     monkeypatch.setattr(bot.random, "sample", lambda seq, k: list(reversed(seq)))
     recorded = {}
     monkeypatch.setattr(db, "review",
@@ -123,5 +124,30 @@ def test_assembly_wrong_tap_counts_error(fresh_db, monkeypatch):
     assert ctx.user_data["asm_errors"] == 1
     assert q.toasts and q.toasts[0]                    # мягкий тост, не падение
     for token in EXAMPLE_TOKENS:                       # дособираем правильно
+        q = _tap(ctx, order.index(token), recorded)
+    assert recorded["ok"] is True                      # 1 промах — зачёт (прощение мисклика)
+    assert "прощ" in q.edits[-1][0]                    # и об этом сказано честно
+
+
+def test_assembly_two_errors_fail(fresh_db, monkeypatch):
+    """A3.2: два промаха — уже незачёт (прощается ровно один)."""
+    monkeypatch.setattr(bot.random, "sample", lambda seq, k: list(reversed(seq)))
+    recorded = {}
+    monkeypatch.setattr(db, "review",
+                        lambda wid, ok, uid, variant=None, ms=None, card_type=None:
+                        recorded.update(ok=ok) or
+                        {"word_id": wid, "box": 1, "status": "forgot", "next_review": ""})
+    monkeypatch.setattr(db, "adapt_band", lambda uid: None)
+    monkeypatch.setattr(db, "backup", lambda: None)
+    with fresh_db._conn() as c:
+        c.execute("UPDATE content SET example='We need to meet the deadline' WHERE word_id=2")
+    ctx = _ctx_for(2, 4)
+    bot._card_payload(ctx, UID)
+    order = ctx.user_data["asm_order"]
+
+    _tap(ctx, order.index("deadline"), recorded)       # промах №1
+    _tap(ctx, order.index("the"), recorded)            # промах №2
+    assert ctx.user_data["asm_errors"] == 2
+    for token in EXAMPLE_TOKENS:
         _tap(ctx, order.index(token), recorded)
-    assert recorded["ok"] is False                     # с ошибкой -> честный незачёт
+    assert recorded["ok"] is False                     # два промаха — честный незачёт

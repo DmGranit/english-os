@@ -54,7 +54,11 @@ def _run_finish(ud, monkeypatch, reply):
 
 
 def test_finish_session_applies_and_clears(fresh_db, monkeypatch):
+    import datetime
     fresh_db.start_learning([1], UID)                       # invest в box 1
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    with fresh_db._conn() as c:        # A1.1: слово «сегодняшнего» ввода ИТОГ не двигает
+        c.execute("UPDATE state SET promoted_at=? WHERE user_id=?", (yesterday, UID))
     ud = {"mode": "scenario", "history": [{"role": "user", "content": "invest is great"}]}
     sent, n_llm = _run_finish(ud, monkeypatch, REPORT)
     assert n_llm == 1

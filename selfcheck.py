@@ -3,7 +3,8 @@
 и по команде /health (владелец). Без сети и без LLM — мгновенно."""
 import db, prompts
 
-REQUIRED_BLOCKS = {"ЯДРО", "NEW", "REVIEW", "SCENARIO", "FLOW", "INPUT", "ИТОГ"}
+# REVIEW выпилен (A2.3): колода работает без LLM, текст в review собирается как FLOW
+REQUIRED_BLOCKS = {"ЯДРО", "NEW", "SCENARIO", "FLOW", "INPUT", "ИТОГ"}
 
 
 def checks():

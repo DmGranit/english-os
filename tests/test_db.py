@@ -89,6 +89,10 @@ def test_promote_new_marks_state(fresh_db):
 
 def test_summary_reviewed_updates_srs(fresh_db):
     fresh_db.start_learning([1, 2], UID)
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    with fresh_db._conn() as c:        # A1.1: введённые СЕГОДНЯ слова ИТОГ не двигает —
+        c.execute("UPDATE state SET promoted_at=? WHERE user_id=?",   # состарим ввод
+                  (yesterday, UID))
     res = fresh_db.apply_session_summary(
         {"reviewed": [{"word": "invest", "ok": True},
                       {"word": "deadline", "ok": False}]}, UID)

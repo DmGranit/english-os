@@ -44,7 +44,19 @@ def test_maintenance_failure_returns_to_circulation(fresh_db):
     fresh_db.ensure_user_state(UID)
     _set_state(fresh_db, 1, 5, "known", datetime.date.today().isoformat())
     r = fresh_db.review(1, False, UID)
-    assert r["box"] == 1 and r["status"] == "forgot"     # честность can-do восстановлена
+    # 4.1 (вариант c, канон Ч.3.8): провал ПРОВЕРКИ ВЫЖИВАНИЯ (box 5) -> box 1 (в оборот).
+    # Провал выживания = реальное угасание: слово перестаёт числиться освоенным,
+    # can-do-прокси не врёт. (Мягкий Лейтнер A3.1 — только для box 3-4, см. ниже.)
+    assert r["box"] == 1 and r["status"] == "forgot"
+    assert r["next_review"] == _today_plus(fresh_db, fresh_db.INTERVALS[1])
+
+
+def test_soft_leitner_box4_drops_one(fresh_db):
+    """A3.1 остаётся для box 3-4: провал не обнуляет, а опускает на одну коробку."""
+    fresh_db.ensure_user_state(UID)
+    _set_state(fresh_db, 1, 4, "learning", datetime.date.today().isoformat())
+    r = fresh_db.review(1, False, UID)
+    assert r["box"] == 3 and r["status"] == "forgot"     # box4 -> box3, не в начало
 
 
 def test_first_arrival_to_box5_keeps_leitner_interval(fresh_db):

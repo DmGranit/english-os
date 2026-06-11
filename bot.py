@@ -223,8 +223,11 @@ def _is_end_trigger(text):
     return bool(_END_PHRASES.match(t)) and len(t.split()) <= 4
 IDLE_SUMMARY_SEC = 25 * 60   # тишина, после которой сессия сводится автоматически
 
-END_PROMPT = ("<КОНЕЦ СЕССИИ> Заверши занятие: дай человеческий отчёт ИТОГ, а в самом конце — "
-              "машинный JSON-блок (reviewed/add/errors). Не переводи это сообщение и не проси повторить.")
+def _end_prompt():
+    """Команда завершения с РЕАЛЬНОЙ датой (A1.2): без неё модель выдумывала дату в шапке."""
+    return (f"<КОНЕЦ СЕССИИ> Сегодня {datetime.date.today().isoformat()} — в шапке ИТОГ "
+            "используй ЭТУ дату. Заверши занятие: дай человеческий отчёт ИТОГ, а в самом конце — "
+            "машинный JSON-блок (reviewed/add/errors). Не переводи это сообщение и не проси повторить.")
 
 async def _finish_session(ud, uid, send):
     """Свести сессию: ИТОГ от модели -> запись в базу -> отчёт через send(text).
@@ -234,7 +237,7 @@ async def _finish_session(ud, uid, send):
                    "Напиши пару фраз или нажми ☀️ Повторить.")
         return
     ctx = types.SimpleNamespace(user_data=ud)      # _call работает только с user_data
-    reply = await _call(ctx, ud.get("mode", "flow"), uid, END_PROMPT, with_summary=True)
+    reply = await _call(ctx, ud.get("mode", "flow"), uid, _end_prompt(), with_summary=True)
     data, reply = _extract_summary(reply)
     reply = _strip_fences(reply)                   # человеческий отчёт — без ```-заборов
     if data:
@@ -744,6 +747,8 @@ async def _process_user_text(update, ctx, uid, text):
         await _teach_words(update, ctx, uid, targets)
         return
 
+    if _mode(ctx) == "review":                   # A2.3: протухшая колода — разговор это flow,
+        ctx.user_data["mode"] = "flow"           # а не «назови, что повторяем» без DUE-списка
     reply = await _call(ctx, _mode(ctx), uid, text)
     n = ctx.user_data.get("msg_n", 0) + 1
     ctx.user_data["msg_n"] = n
@@ -876,7 +881,7 @@ async def _begin_scenario(msg, ctx, uid, scenario):
     db.ensure_user_state(uid)
     wd = db.theme_words("scn", scenario, uid, n=4, band=db.get_band(uid))
     ids = [w["word_id"] for w in wd]
-    db.start_learning(ids, uid)
+    db.start_learning(ids, uid, via="scenario")   # A1.3: не закрывает слот NEW в карте дня
     ctx.user_data.pop("awaiting_slot_hours", None)
     ctx.user_data.update(mode="scenario", history=[], scn_words=ids)
     seed = (f"СЦЕНАРИЙ-СЕССИЯ: «{scenario}». Один ответ, три шага:\n"
@@ -986,6 +991,11 @@ async def _call(ctx, mode, uid, user_text, with_summary=False):
         scn_wd = [w for w in (db.get_word(i) for i in scn_ids) if w]
         system += ("\n\nЦЕЛЕВЫЕ СЛОВА СЦЕНАРИЯ (вплетай в свои реплики и строй сцену так, "
                    "чтобы ученик ими пользовался):\n" + db.format_for_agent(scn_wd))
+    if mode == "scenario":                     # A2.1: роль живёт в system, а не в первом
+        scn_name = ctx.user_data.get("last_scenario")   # сообщении — обрезка истории её не съест
+        if scn_name:
+            system += (f"\n\nТЫ В РОЛИ: собеседник сценария «{scn_name}». Держи роль как живой "
+                       "человек до самого ИТОГа; ошибки ученика копи молча — разбор только в ИТОГе.")
     hist = _history(ctx)
     _remember(hist, "user", user_text)
     model = SMART_MODEL if mode in SMART_MODES else None   # диалог -> умная модель; структура -> дешёвая
@@ -1337,12 +1347,15 @@ async def on_assembly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(_asm_question(word, pos + 1, total, ud["asm_picked"]),
                                   reply_markup=_asm_kb(order, ud["asm_used"]))
         return
-    # собрано: объективный зачёт, экран результата (+ сеть для layered), кнопка «Дальше»
-    ok = ud.get("asm_errors", 0) == 0
+    # собрано: объективный зачёт (1 мисклик прощается — A3.2), экран результата, «Дальше»
+    errs = ud.get("asm_errors", 0)
+    ok = errs <= 1
     shown = ud.get("card_shown_at")
     ms = int((time.time() - shown) * 1000) if shown else None
     await _record_review(ctx, uid, ud["asm_wid"], ok, ms, card_type="assembly")
-    verdict = "✅ Собрано без ошибок!" if ok else f"⚠️ Собрано, но ошибок: {ud['asm_errors']}"
+    verdict = ("✅ Собрано без ошибок!" if errs == 0
+               else "✅ Собрано! (один промах — прощён)" if ok
+               else f"⚠️ Собрано, но ошибок: {errs}")
     block = ("\n" + _network_block(word)) if _variant(uid, ud["asm_wid"]) == "layered" else ""
     sentence = " ".join(target)
     sentence = sentence[:1].upper() + sentence[1:]   # вернуть заглавную в показе (в задаче снята)

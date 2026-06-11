@@ -22,12 +22,13 @@ def _load_blocks(path=_PATH):
     return blocks
 
 BLOCKS = _load_blocks()
-MODE_KEYS = {"new": "NEW", "review": "REVIEW", "scenario": "SCENARIO",
-             "flow": "FLOW", "input": "INPUT"}
+# REVIEW удалён (A2.3): колода работает без LLM, свободный текст в review падает в FLOW
+MODE_KEYS = {"new": "NEW", "scenario": "SCENARIO", "flow": "FLOW", "input": "INPUT"}
 
 def assemble(mode, with_summary=False):
-    """Системный промпт для вызова модели: ЯДРО + модуль режима (+ ИТОГ при завершении)."""
-    parts = [BLOCKS["ЯДРО"], BLOCKS[MODE_KEYS[mode]]]
+    """Системный промпт для вызова модели: ЯДРО + модуль режима (+ ИТОГ при завершении).
+    Неизвестный/устаревший режим (review) собирается как FLOW — без KeyError."""
+    parts = [BLOCKS["ЯДРО"], BLOCKS[MODE_KEYS.get(mode, "FLOW")]]
     if with_summary:
         parts.append(BLOCKS["ИТОГ"])
     return "\n\n".join(parts)

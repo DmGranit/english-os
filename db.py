@@ -136,6 +136,9 @@ def _migrate(c):
         c.execute("ALTER TABLE reviews ADD COLUMN direction TEXT")
     if "card_type" not in cols:               # тип карточки: mcq|cloze|typed|assembly|self
         c.execute("ALTER TABLE reviews ADD COLUMN card_type TEXT")  # для честного A/B (несравнимы)
+    scols = {r["name"] for r in c.execute("PRAGMA table_info(state)").fetchall()}
+    if scols and "promoted_via" not in scols:  # источник ввода: new|direct|scenario (A1.3)
+        c.execute("ALTER TABLE state ADD COLUMN promoted_via TEXT")
     ucols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
     if ucols and "reminder_hour" not in ucols:
         c.execute("ALTER TABLE users ADD COLUMN reminder_hour INTEGER")
@@ -425,11 +428,14 @@ def log_session(user_id, mode):
                   (user_id, datetime.datetime.now().isoformat(), _today(), mode))
 
 def day_map(user_id, day=None):
-    """Карта дня: закрыты ли слоты. NEW — введены слова сегодня; REVIEW — было
-    повторение сегодня; SCENARIO — завершена сценарная сессия сегодня."""
+    """Карта дня: закрыты ли слоты. NEW — введены слова сегодня (кнопкой 🌅 или прямой
+    просьбой; сценарные слова НЕ закрывают слот — A1.3); REVIEW — было повторение
+    сегодня; SCENARIO — завершена сценарная сессия сегодня."""
     day = day or _today()
     with _conn() as c:
-        new = c.execute("SELECT 1 FROM state WHERE user_id=? AND promoted_at=? LIMIT 1",
+        new = c.execute("""SELECT 1 FROM state WHERE user_id=? AND promoted_at=?
+                           AND (promoted_via IS NULL OR promoted_via IN ('new','direct'))
+                           LIMIT 1""",
                         (user_id, day)).fetchone() is not None
         rev = c.execute("SELECT 1 FROM reviews WHERE user_id=? AND ts LIKE ? LIMIT 1",
                         (user_id, day + "%")).fetchone() is not None
@@ -800,7 +806,7 @@ def promote_new(user_id=DEFAULT_USER, n=DAILY_NEW_CAP):
     with _conn() as c:
         for w in pool:
             c.execute("""UPDATE state SET status='learning', box=1,
-                         last_review=?, next_review=?, promoted_at=?
+                         last_review=?, next_review=?, promoted_at=?, promoted_via='new'
                          WHERE user_id=? AND word_id=?""",
                       (today, today, today, user_id, w["word_id"]))
     return pool
@@ -810,9 +816,10 @@ def intake_budget_left(user_id=DEFAULT_USER):
     Единый дневной бюджет cap×MULT — защита от лавины (раньше эти пути шли мимо капа)."""
     return max(0, DAILY_NEW_CAP * DIRECT_BUDGET_MULT - promoted_today(user_id))
 
-def start_learning(ids, user_id=DEFAULT_USER):
+def start_learning(ids, user_id=DEFAULT_USER, via="direct"):
     """Ввести конкретные слова в оборот («учим X», темы, ветка, сценарий) В ПРЕДЕЛАХ
-    дневного бюджета. Возвращает список реально введённых word_id."""
+    дневного бюджета. via — источник ввода (direct|scenario): сценарные слова не должны
+    закрывать слот NEW в карте дня (A1.3). Возвращает список реально введённых word_id."""
     budget = intake_budget_left(user_id)
     if budget <= 0:
         return []
@@ -823,9 +830,9 @@ def start_learning(ids, user_id=DEFAULT_USER):
             if len(added) >= budget:
                 break
             cur = c.execute("""UPDATE state SET status='learning', box=1,
-                               last_review=?, next_review=?, promoted_at=?
+                               last_review=?, next_review=?, promoted_at=?, promoted_via=?
                                WHERE user_id=? AND word_id=? AND status='new'""",
-                            (today, today, today, user_id, wid))
+                            (today, today, today, via, user_id, wid))
             if cur.rowcount:
                 added.append(wid)
     return added
@@ -874,9 +881,13 @@ def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None, car
             status = "known" if box == 5 else "learning"
             days = MAINTENANCE_DAYS if already_known else INTERVALS[box]
         else:
-            box = 1
+            # мягкий Лейтнер (A3.1) + провал проверки выживания (4.1, вариант c, канон Ч.3.8):
+            # box 5 (maintenance) провален -> в оборот (box 1): провал выживания = реальное
+            # угасание, освоенным числиться не должен (can-do-прокси не врёт);
+            # box 3-4 (ещё созревают) -> мягкий минус-1; незрелое (1-2) -> в начало.
+            box = 1 if box == 5 else (box - 1 if box >= 3 else 1)
             status = "forgot"
-            days = INTERVALS[1]
+            days = INTERVALS[box]
         nxt = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
         c.execute("""UPDATE state SET box=?, status=?, last_review=?, next_review=?
                      WHERE user_id=? AND word_id=?""",
@@ -992,9 +1003,26 @@ def find_word_id(word):
                       (word.strip(),)).fetchone()
     return r["word_id"] if r else None
 
+def _itog_can_move(word_id, user_id):
+    """A1.1: ИТОГ двигает SRS осторожно. False — слово введено СЕГОДНЯ (только что
+    закодировано, интервала не было — «вспомнил» тривиален) или уже двигалось ИТОГом
+    сегодня (повторный ИТОГ/двойной учёт размывает SRS-математику)."""
+    today = _today()
+    with _conn() as c:
+        r = c.execute("SELECT promoted_at FROM state WHERE user_id=? AND word_id=?",
+                      (user_id, word_id)).fetchone()
+        if r is not None and r["promoted_at"] == today:
+            return False
+        moved = c.execute("""SELECT 1 FROM reviews WHERE user_id=? AND word_id=?
+                             AND card_type='itog' AND ts LIKE ? LIMIT 1""",
+                          (user_id, word_id, today + "%")).fetchone()
+    return moved is None
+
 def apply_session_summary(data, user_id=DEFAULT_USER):
     """Применить машинный итог сессии: reviewed -> SRS (review), add -> очередь pending.
     Мусор (неизвестное слово / нет state) пропускается, не падает.
+    reviewed двигает box максимум на +1 и не чаще раза в день (card_type='itog');
+    слова, введённые сегодня, не двигаются вовсе (A1.1).
     Возвращает счётчики {'ok','fail','added','skipped'}."""
     ok = fail = added = skipped = 0
     for item in (data.get("reviewed") or []):
@@ -1002,8 +1030,11 @@ def apply_session_summary(data, user_id=DEFAULT_USER):
         if wid is None:
             skipped += 1
             continue
+        if not _itog_can_move(wid, user_id):     # свежевыученное / уже двигалось ИТОГом
+            skipped += 1
+            continue
         try:
-            review(wid, bool(item.get("ok")), user_id)
+            review(wid, bool(item.get("ok")), user_id, card_type="itog")
         except ValueError:          # нет state для слова — пропустить
             skipped += 1
             continue
