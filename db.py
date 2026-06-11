@@ -451,6 +451,17 @@ def set_band(user_id, band):
                      ON CONFLICT(user_id) DO UPDATE SET level=excluded.level""",
                   (user_id, band, _today()))
 
+def nudge_band(user_id, direction):
+    """Ручной руль сложности (Слой Б): ученик сам двигает скрытую полосу.
+    direction +1 сложнее / -1 проще. Возвращает (новая_полоса, сдвинулась?)."""
+    cur = get_band(user_id)
+    i = _BANDS.index(cur) if cur in _BANDS else 0
+    j = max(0, min(len(_BANDS) - 1, i + direction))
+    if j != i:
+        set_band(user_id, _BANDS[j])
+        return _BANDS[j], True
+    return _BANDS[i], False
+
 def adapt_band(user_id, window=12):
     """Тихо двигаем полосу по последним повторениям, РАЗДЕЛЬНО по направлениям
     (recog EN→RU легче, prod RU→EN труднее — общее окно дёргало полосу от состава колоды).
