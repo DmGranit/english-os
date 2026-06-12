@@ -764,8 +764,9 @@ def learning_words(user_id=DEFAULT_USER, limit=8):
                          (user_id, limit)).fetchall()
     return [_row_to_word(r) for r in rows]
 
-def mature_words(user_id=DEFAULT_USER, limit=25):
-    """Хорошо усвоенные слова (known или box>=3) — известная база текста (правило 98%)."""
+def mature_words(user_id=DEFAULT_USER, limit=60):
+    """Хорошо усвоенные слова (known или box>=3) — известная база текста (правило 98%).
+    Лимит 60 (A5.1): модель должна видеть реальную базу ученика, а не верхушку."""
     with _conn() as c:
         rows = c.execute("""SELECT c.* FROM state s JOIN content c USING(word_id)
                             WHERE s.user_id=? AND (s.status='known' OR s.box>=3)
@@ -846,9 +847,33 @@ def due_count(user_id=DEFAULT_USER):
                               AND next_review IS NOT NULL AND next_review<=?""",
                          (user_id, today)).fetchone()[0]
 
+def _interleave_by_theme(rows):
+    """A4.3 (интерливинг): внутри ОДНОГО дня просрочки чередуем темы — слова одного
+    батча/сценария не идут стопкой (перемешивание усиливает retention). Порядок дней
+    («самые просроченные раньше») сохраняется; внутри темы — исходный порядок (priority)."""
+    out, i = [], 0
+    while i < len(rows):
+        j = i
+        while j < len(rows) and rows[j]["s_next"] == rows[i]["s_next"]:
+            j += 1                                   # [i:j] — один день просрочки
+        groups, order = {}, []
+        for r in rows[i:j]:
+            key = r["scenario"] or r["dna_idea"] or ""
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(r)
+        while any(groups[k] for k in order):         # round-robin по темам дня
+            for k in order:
+                if groups[k]:
+                    out.append(groups[k].pop(0))
+        i = j
+    return out
+
 def due_today(user_id=DEFAULT_USER, limit=None):
     """Слова к повторению: learning/forgot + созревшие known (maintenance) с
-    next_review<=сегодня. Самые просроченные первыми. limit — кап колоды (B1)."""
+    next_review<=сегодня. Самые просроченные первыми, внутри дня — темы чередуются
+    (A4.3). limit — кап колоды (B1)."""
     today = _today()
     cap = f"LIMIT {int(limit)}" if limit else ""
     with _conn() as c:
@@ -859,9 +884,21 @@ def due_today(user_id=DEFAULT_USER, limit=None):
                               AND s.next_review IS NOT NULL AND s.next_review<=?
                             ORDER BY s.next_review ASC, c.priority DESC {cap}""",
                          (user_id, today)).fetchall()
+    rows = _interleave_by_theme(rows)
     words = [_row_to_word(r) for r in rows]
     st = {r["word_id"]: {"status": r["s_status"], "box": r["s_box"]} for r in rows}
     return words, st
+
+def fresh_today(user_id=DEFAULT_USER, limit=1):
+    """Слова, введённые СЕГОДНЯ и ещё в box 1 — кандидаты на «тёплое превью» продукции
+    (A4.1): показать ядро продукта в день 1, вне SRS-учёта."""
+    with _conn() as c:
+        rows = c.execute("""SELECT c.* FROM state s JOIN content c USING(word_id)
+                            WHERE s.user_id=? AND s.promoted_at=? AND s.box=1
+                              AND s.status='learning'
+                            ORDER BY c.priority DESC LIMIT ?""",
+                         (user_id, _today(), limit)).fetchall()
+    return [_row_to_word(r) for r in rows]
 
 def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None, card_type=None):
     """Обновить SRS после повторения. remembered: True/False.
@@ -1150,6 +1187,9 @@ def progress_summary(user_id=DEFAULT_USER):
                         (user_id,)).fetchone()[0]
         sessions = c.execute("SELECT COUNT(*) FROM sessions WHERE user_id=?",
                              (user_id,)).fetchone()[0]
+        inputs = c.execute("""SELECT COUNT(*) FROM sessions
+                              WHERE user_id=? AND mode='input'""",   # A5.2: чтение видно
+                           (user_id,)).fetchone()[0]
         reviews = c.execute("SELECT COUNT(*) FROM reviews WHERE user_id=?",
                             (user_id,)).fetchone()[0]
         ok = c.execute("SELECT COALESCE(SUM(remembered),0) FROM reviews WHERE user_id=?",
@@ -1160,7 +1200,7 @@ def progress_summary(user_id=DEFAULT_USER):
                                SELECT MIN(substr(ts,1,10)) d FROM reviews WHERE user_id=?)""",
                           (user_id, user_id)).fetchone()[0]
     return {"mastered": mastered, "familiar": familiar, "learning": familiar, "new": new,
-            "sessions": sessions, "reviews": reviews,
+            "sessions": sessions, "inputs": inputs, "reviews": reviews,
             "accuracy": round(ok / reviews * 100) if reviews else None,
             "since": first, "nation_target": NATION_TARGET}
 

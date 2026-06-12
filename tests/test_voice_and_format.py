@@ -66,11 +66,14 @@ def test_stt_hints_deck_is_english(fresh_db):
     assert lang == "en" and "invest" in prompt
 
 
-def test_stt_hints_deck_box3_expects_english(fresh_db):
+def test_stt_hints_deck_box3_typed_no_word_hint(fresh_db):
+    """A4.2: typed-карточка (box 3) — проверка продукции. Слово-подсказку Whisper
+    НЕ передаём (он «дослышивал» ожидаемый ответ — проверка подыгрывала себе)."""
     ctx = _deck_ctx(fresh_db, 3)
+    ctx.user_data["typed_wid"] = 1                 # так делает _card_payload на box 3
     lang, prompt = bot._stt_hints(ctx, UID)
     assert lang == "en"
-    assert "invest" in prompt
+    assert prompt is None
 
 
 def test_voice_hallucination_guard_on_deck(fresh_db, monkeypatch):

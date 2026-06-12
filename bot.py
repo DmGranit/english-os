@@ -654,13 +654,17 @@ def _deck_card(ctx):
 
 def _stt_hints(ctx, uid):
     """Подсказки Whisper (A7). Во время колоды язык ответа известен ТОЧНО:
-    box 1 ждёт русский перевод, box 2+ — английское слово; ожидаемое слово
-    уходит в prompt (на 1-секундных клипах без подсказки Whisper галлюцинирует —
-    валлийский кейс). Вне колоды: разговорные режимы — en, prompt — слова в работе."""
-    # box 1 теперь выбор из 4 (не голос), box 2+ ждут английское слово в подсказку
+    ожидаемое слово уходит в prompt (на 1-секундных клипах без подсказки Whisper
+    галлюцинирует — валлийский кейс). Вне колоды: en, prompt — слова в работе.
+    ⚠️ A4.2: на ПРОВЕРОЧНЫХ карточках (typed box 3, сборка box 4, тёплое превью)
+    слово-подсказку НЕ передаём — Whisper «дослышивал» ожидаемый ответ, и проверка
+    продукции подыгрывала сама себе. language='en' остаётся всегда."""
+    ud = ctx.user_data
+    if ud.get("typed_wid") or ud.get("asm_wid") or ud.get("warm_wid"):
+        return "en", None                       # честная продукция: без подсказки ответа
     word, _ = _deck_card(ctx)
     if word:
-        return "en", word["word"]
+        return "en", word["word"]               # самооценочные карточки: подсказка остаётся
     # вне колоды: en ПО УМОЛЧАНИЮ везде — без подсказки короткие клипы галлюцинируют
     # (болгарский/валлийский/грузинский кейсы); русские команды лучше текстом
     focus = ", ".join(w["word"] for w in db.learning_words(uid)) or None
@@ -719,6 +723,10 @@ async def _process_user_text(update, ctx, uid, text):
 
     if ctx.user_data.get("act_wid"):             # ждём фразу для активации нового слова
         await _handle_activation_phrase(update, ctx, uid, text)
+        return
+
+    if ctx.user_data.get("warm_wid"):            # тёплое превью продукции (A4.1, вне SRS)
+        await _handle_warm_answer(update, ctx, uid, text)
         return
 
     if ctx.user_data.get("typed_wid"):           # ждём напечатанный ответ карточки box 3
@@ -1241,8 +1249,54 @@ async def _finish_review(q, ctx, uid):
         f"Карточек: {ok + fail}\n✅ Вспомнил: {ok}\n❌ Забыл: {fail}\n\n"
         f"Прогресс сохранён.{tail}"
     )
+    fresh = db.fresh_today(uid, limit=1)       # A4.1: продукция видна в день 1, не через неделю
+    if fresh:
+        await q.message.reply_text(
+            "⚡ Бонус: одно из сегодняшних слов — попробуешь сказать сам? "
+            "Это превью продукции, в статистику не идёт.",
+            reply_markup=_warm_kb(fresh[0]["word_id"]))
     # носитель клавиатуры (reply-клавиатуру нельзя приложить к edit — только новым сообщением)
     await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
+
+# ---------- тёплое превью продукции (A4.1): typed-карточка ВНЕ SRS-учёта ----------
+def _warm_kb(wid):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⚡ Попробую", callback_data=f"warm:go:{wid}"),
+        InlineKeyboardButton("Потом", callback_data="warm:skip"),
+    ]])
+
+async def on_warm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Превью продукции в день 1: ядро продукта (скажи сам) показывается сразу,
+    но НЕ пишется в reviews — SRS-математика не искажается."""
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split(":")
+    if parts[1] == "skip":
+        ctx.user_data.pop("warm_wid", None)
+        await q.edit_message_text("Ок! Продукция начнёт приходить сама — по мере созревания слов 🌱")
+        return
+    word = db.get_word(int(parts[2]))
+    if not word:
+        return
+    ctx.user_data["warm_wid"] = word["word_id"]
+    await q.edit_message_text(
+        f"⚡ Как сказать по-английски:\n«{word['ru']}»?\n\n"
+        "Напиши или скажи голосом 🎤 (это превью — в статистику не идёт).")
+
+async def _handle_warm_answer(update, ctx, uid, text):
+    """Ответ на тёплое превью: фидбек без записи в SRS — витрина продукции, не проверка."""
+    wid = ctx.user_data.pop("warm_wid")
+    word = db.get_word(wid)
+    given = (text or "").strip()
+    ok = (given.lower() == (word["word"] or "").lower()) or _one_edit_away(given, word["word"])
+    if ok:
+        msg = (f"🔥 Да! {word['word']} — {word['ru']}.\n"
+               "Это и есть продукция — сказать самому. Дальше такие карточки будут "
+               "приходить сами, по мере созревания слов.")
+    else:
+        msg = (f"Это было «{word['word']}» — {word['ru']}. Ничего страшного: слово свежее, "
+               "повторения сделают своё 🌱 (превью в статистику не идёт)")
+    await update.message.reply_text(msg)
 
 # ---------- нажатия кнопок в карточках повторения ----------
 async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1458,22 +1512,94 @@ async def fill_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Подтверждение — /pending (есть «Подтвердить все»).")
 
 # ---------- режим чтения: понятный вход i+1 ----------
+# A5.1: правило 98% обеспечивается ПРОВЕРКОЙ, а не просьбой. Известные = словарь ученика
+# (зрелые+целевые+их семьи) + простое высокочастотное ядро. Порог и ядро — ниже.
+READ_UNKNOWN_MAX = 0.08          # доля незнакомых токенов, после которой текст переделывается
+
+_SIMPLE_WORDS = frozenset("""
+a an the and or but so because if when while as than then else not no nor of in on at to for
+from with without by about into over under between through during before after up down out off
+above near behind across around i you he she it we they me him her us them my your his its our
+their mine yours this that these those who what which where why how whose someone anyone
+everyone something anything everything nothing somewhere be am is are was were been being have
+has had having do does did done doing will would can could may might must shall should need
+dare let go goes went gone going get gets got getting make makes made making take takes took
+taken taking come comes came coming see sees saw seen seeing know knows knew known knowing
+want wants wanted think thinks thought say says said saying tell tells told talk talks talked
+speak speaks spoke work works worked working find finds found give gives gave given use uses
+used try tries tried call calls called ask asks asked feel feels felt leave leaves left put
+puts keep keeps kept start starts started stop stops stopped play played run runs ran live
+lives lived mean means meant read reads write writes wrote written meet meets met help helps
+helped look looks looked like likes liked love loves loved show shows showed open opens opened
+close closes closed buy buys bought pay pays paid eat eats ate drink drinks drank sleep slept
+walk walks walked learn learns learned teach teaches taught study studies studied send sends
+sent wait waits waited watch watches watched listen listens listened turn turns turned change
+changes changed happen happens happened seem seems seemed become becomes became bring brings
+brought hold holds held stand stands stood sit sits sat grow grows grew win wins won lose loses
+lost plan plans planned hope hopes hoped remember remembers remembered understand understood
+thank thanks thanked one two three four five six seven eight nine ten first second third next
+last time times day days week weeks month months year years today tomorrow yesterday morning
+evening night hour hours minute minutes now then here there soon often always never sometimes
+usually very really just also too only again still already yet maybe please well together
+people person man woman friend family home house work job office team meeting email phone
+money business boss city country word words name question answer problem idea plan project
+task report food water coffee tea lunch dinner thing things way ways life world good bad big
+small new old long short high low right wrong easy hard early late happy sad busy free nice
+great important real full empty best better worse hot cold young same different more most less
+least much many few little some any all every each both other another lot bit
+""".split())
+
+def _known_token(t, known):
+    """Токен знаком? Прямое совпадение + дешёвая морфология (deadlines/invested/investing)."""
+    if t in known or t in _SIMPLE_WORDS:
+        return True
+    for suf in ("'s", "s", "es", "ed", "ing", "ly", "er", "est"):
+        if t.endswith(suf) and len(t) > len(suf) + 2 and t[:-len(suf)] in known:
+            return True
+    if t.endswith("ing") and t[:-3] + "e" in known:    # making -> make
+        return True
+    return False
+
+def _unknown_share(text, known):
+    """(доля, [незнакомые]) по токенам текста. Строка «🔑 words: …» не считается —
+    там пояснения целевых слов, им можно быть новыми."""
+    body = "\n".join(l for l in (text or "").split("\n") if not l.strip().startswith("🔑"))
+    toks = [t.lower() for t in re.findall(r"[A-Za-z][A-Za-z'\-]+", body) if len(t) > 1]
+    if not toks:
+        return 0.0, []
+    unk = sorted({t for t in toks if not _known_token(t, known)})
+    return sum(1 for t in toks if not _known_token(t, known)) / len(toks), unk
+
 async def read_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/read — понятный текст по правилу 98%: ~98% известных слов + ~2% целевых новых."""
+    """/read — понятный текст по правилу 98%: ~98% известных слов + ~2% целевых новых.
+    A5.1: выход модели ПРОВЕРЯЕТСЯ (доля незнакомых токенов), при провале — один
+    регенерат с конкретным списком нарушителей. A5.2: чтение оставляет след в sessions."""
     uid = _learner(update)
     targets = db.target_words(uid) or db.learning_words(uid)   # новые ~2%
     if not targets:
         await update.message.reply_text(
             "Сначала добавь слова в режиме «🌅 Новые слова» — потом соберу текст для чтения.")
         return
-    base = db.mature_words(uid)                                # известное ~98%
+    base = db.mature_words(uid)                                # известное ~98% (до 60 слов)
     base_list = ", ".join(w["word"] for w in base) or \
         "(освоенных слов пока мало — держи остальную лексику простой и высокочастотной)"
+    known = {w["word"].lower() for w in base + targets}
+    for w in base + targets:                                   # семьи тоже знакомы ученику
+        known.update(str(m).lower() for m in (w.get("family") or []))
     seed = ("Целевые НОВЫЕ слова — вплети их (это ~2% текста):\n"
             f"{db.format_for_agent(targets)}\n\n"
             f"ИЗВЕСТНЫЕ ученику слова — опирайся на них (~98% текста):\n{base_list}")
     await _typing(update.message)
-    text = await asyncio.to_thread(llm.chat, prompts.assemble("input"), [{"role": "user", "content": seed}])
+    text = await asyncio.to_thread(llm.chat, prompts.assemble("input"),
+                                   [{"role": "user", "content": seed}])
+    ratio, unk = _unknown_share(text, known)
+    if ratio > READ_UNKNOWN_MAX:                               # правило 98% нарушено — переделка
+        retry = (seed + "\n\nПЕРЕДЕЛКА: в прошлой версии слишком много слов вне словаря "
+                 "ученика: " + ", ".join(unk[:12]) + ". Перепиши текст, заменив их на слова "
+                 "из списка известных или на простейшую лексику (A1). Целевые слова сохрани.")
+        text = await asyncio.to_thread(llm.chat, prompts.assemble("input"),
+                                       [{"role": "user", "content": retry}])
+    db.log_session(uid, "input")                               # A5.2: режим больше не невидим
     await _say(update.message, text)
 
 # ---------- движок структурных ошибок: /mistakes ----------
@@ -1508,7 +1634,8 @@ async def progress_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append("\n⚠️ Это ориентир по словарю, а не официальная оценка CEFR.")
     s = db.progress_summary(uid)            # сводка пути — вторична к can-do (канон Ч.5)
     acc = f" · точность {s['accuracy']}%" if s["accuracy"] is not None else ""
-    path = (f"\n💪 Усилие: {s['reviews']} повторений{acc} · {s['sessions']} занятий"
+    inputs = f" · 📖 текстов {s['inputs']}" if s.get("inputs") else ""   # A5.2: чтение видно
+    path = (f"\n💪 Усилие: {s['reviews']} повторений{acc} · {s['sessions']} занятий{inputs}"
             + (f" · с {s['since']}" if s["since"] else "") + "\n"
             f"🌱 Зреют: 🟡 знакомо {s['familiar']} → 🟢 освоено {s['mastered']} "
             f"(освоенным слово становится после нескольких повторений в разные дни) → "
@@ -2063,6 +2190,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_mode, pattern=r"^mode:"))
     app.add_handler(CallbackQueryHandler(on_review, pattern=r"^rev:"))
     app.add_handler(CallbackQueryHandler(on_assembly, pattern=r"^asm:"))
+    app.add_handler(CallbackQueryHandler(on_warm, pattern=r"^warm:"))   # превью продукции
     app.add_handler(CallbackQueryHandler(on_mcq, pattern=r"^mcq:"))
     app.add_handler(CallbackQueryHandler(on_activation, pattern=r"^act:"))
     app.add_handler(CallbackQueryHandler(on_rate, pattern=r"^rate:"))
