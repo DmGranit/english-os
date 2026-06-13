@@ -146,11 +146,11 @@ async def _swap_in(ph, reply, markup=None):
     try:                                          # 1) штатно: правим плейсхолдер с HTML
         await ph.edit_text(_to_html(parts[0]), parse_mode="HTML", reply_markup=first_markup)
     except Exception:
-        try:                                      # 2) HTML кривой -> плоский edit
-            await ph.edit_text(parts[0], reply_markup=first_markup)
+        try:                                      # 2) edit-канал сломан -> новое сообщение, но С HTML
+            await ph.reply_text(_to_html(parts[0]), parse_mode="HTML", reply_markup=first_markup)
         except Exception:
-            log.exception("swap_in edit failed — fallback to new message")
-            try:                                  # 3) edit не идёт -> новое сообщение
+            log.exception("swap_in HTML failed — fallback to plain message")
+            try:                                  # 3) HTML кривой -> плоский текст (доставить любой ценой)
                 await ph.reply_text(parts[0], reply_markup=first_markup)
             except Exception:                     # 4) совсем глухо -> кнопка ретрая
                 log.exception("swap_in reply failed")
@@ -709,6 +709,15 @@ async def _process_user_text(update, ctx, uid, text):
 
     # завершение сессии: слово-триггер, естественная фраза или кнопка «🏁 Итог»
     if _is_end_trigger(text):
+        # B1: стоп-слово как ОТВЕТ на свежую карточку колоды = попытка ответа, не конец сессии.
+        # Явная кнопка «🏁 Итог» (BTN_END) завершает всегда — она в END_WORDS, не в MAIN_BUTTONS,
+        # поэтому исключаем её адресно (наивно опускать end-trigger ниже колоды нельзя).
+        queue = ctx.user_data.get("review_queue") or []
+        pos = ctx.user_data.get("review_pos", 0)
+        fresh = time.time() - ctx.user_data.get("card_shown_at", 0) < 600
+        if text != BTN_END and pos < len(queue) and fresh:
+            await _text_attempt_on_card(update, ctx, uid, text)
+            return
         await _typing(update.message)
         await _finish_session(ctx.user_data, uid, update.message.reply_text)
         return
@@ -719,6 +728,10 @@ async def _process_user_text(update, ctx, uid, text):
 
     if ctx.user_data.get("await_feedback"):      # ждём фидбек (текстом или голосом)
         await _save_feedback(update, ctx, uid, text)
+        return
+
+    if ctx.user_data.pop("await_add", None):     # B6: слово после /add -> в enrich, не в feedback
+        await _handle_add_words(update, ctx, uid, text)
         return
 
     if ctx.user_data.get("act_wid"):             # ждём фразу для активации нового слова
@@ -1928,18 +1941,31 @@ async def users_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _say(update.message, msg)
 
 # ---------- /add: добавить встреченные слова в очередь на изучение ----------
-async def add_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/add word1 word2 — обогатить слова через ИИ и положить в очередь /pending."""
-    words = [w.strip() for w in (ctx.args or []) if w.strip()][:8]
+async def _handle_add_words(update, ctx, uid, text):
+    """Слова на добавление (из аргументов /add или follow-up сообщения) -> enrich -> /pending."""
+    words = [w.strip() for w in (text or "").split() if w.strip()][:8]
     if not words:
-        await update.message.reply_text(
-            "Напиши слова после команды, например: /add deadline stakeholder — добавлю их в очередь на изучение.")
+        await update.message.reply_text("Не увидел слов. Напиши слово(а) или повтори /add со словами.")
         return
     await update.message.reply_text("⏳ Разбираю слова и кладу в очередь…")
     res = await asyncio.to_thread(enrich.run, words)     # не блокируем бота на время запросов к ИИ
     await update.message.reply_text(
         f"Готово: добавил {res['added']}, уже было {res['skipped']}, не вышло {res['failed']}.\n"
         f"Появятся в учёбе после подтверждения админом (/pending).")
+
+async def add_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/add word1 word2 — обогатить слова через ИИ и положить в очередь /pending.
+    Без аргументов — ждём слово следующим сообщением (await_add), чтобы оно не потерялось
+    (B6). Любой заход в /add снимает залипший await_feedback — новая команда = новый интент."""
+    ctx.user_data.pop("await_feedback", None)            # B6: команда отменяет ожидание фидбека
+    text = " ".join(w for w in (ctx.args or []) if w.strip())
+    if not text.strip():
+        ctx.user_data["await_add"] = True                # follow-up слово поймает _process_user_text
+        await update.message.reply_text(
+            "Напиши слова — следующим сообщением или сразу: /add deadline stakeholder — "
+            "добавлю их в очередь на изучение.")
+        return
+    await _handle_add_words(update, ctx, _learner(update), text)
 
 # ---------- календарь: ссылка-шаблон Google + .ics (без OAuth) ----------
 _CAL_TITLE = "English OS — 10 минут английского"

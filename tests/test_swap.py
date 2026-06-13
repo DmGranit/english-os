@@ -43,9 +43,9 @@ def test_swap_in_total_failure_offers_retry():
 
     async def reply_text(text, reply_markup=None, parse_mode=None):
         calls["n"] += 1
-        if calls["n"] == 1:                      # первый фолбэк-reply падает
+        if calls["n"] <= 2:                      # оба контент-reply (HTML, затем плоский) падают
             raise RuntimeError("y")
-        calls["last"] = (text, reply_markup)     # второй (аварийный) проходит
+        calls["last"] = (text, reply_markup)     # третий (аварийный, кнопка ретрая) проходит
         return None
 
     dead = _Dead()
