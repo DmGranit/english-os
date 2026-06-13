@@ -97,6 +97,34 @@ def test_run_without_override_keeps_old_behaviour(fresh_db, monkeypatch):
     assert payload["scenario"] in ("Universal", "Pitching", "Status update", "Negotiating")
 
 
+# ---------- find_ru_clash: предупреждение о дубле перевода ----------
+
+def test_find_ru_clash_found(fresh_db):
+    # "инвестировать" — перевод слова "invest" в conftest
+    clash = db.find_ru_clash("инвестировать")
+    assert clash == ["invest"]
+
+
+def test_find_ru_clash_not_found(fresh_db):
+    assert db.find_ru_clash("уникальный перевод xyz") == []
+
+
+def test_find_ru_clash_case_insensitive(fresh_db):
+    clash = db.find_ru_clash("ИНВЕСТИРОВАТЬ")
+    assert clash == ["invest"]
+
+
+def test_find_ru_clash_excludes_self(fresh_db):
+    # pending_word = "invest": дубль exclude_word=invest → пустой список
+    clash = db.find_ru_clash("инвестировать", exclude_word="invest")
+    assert clash == []
+
+
+def test_find_ru_clash_empty_ru(fresh_db):
+    assert db.find_ru_clash("") == []
+    assert db.find_ru_clash(None) == []
+
+
 # ---------- QA-шаг («стерео»): второй ИИ-проход перед очередью ----------
 
 def _chat_seq(replies):

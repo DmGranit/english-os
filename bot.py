@@ -1444,7 +1444,13 @@ def _pending_card_text(item):
     """Карточка слова из очереди: показать, что предлагает добавить ИИ."""
     p = json.loads(item.get("payload") or "{}")
     lines = [f"🆕 Слово в очереди: {item['word']}"]
-    if p.get("ru"):           lines.append(f"перевод: {p['ru']}")
+    if p.get("ru"):
+        ru_val = p["ru"]
+        clash = db.find_ru_clash(ru_val, exclude_word=item["word"])
+        ru_line = f"перевод: {ru_val}"
+        if clash:
+            ru_line += f"  ⚠️ такой же перевод у: {', '.join(clash)}"
+        lines.append(ru_line)
     if p.get("dna_idea"):     lines.append(f"идея: {p['dna_idea']}")
     if p.get("collocations"): lines.append("коллокации: " + ", ".join(p["collocations"]))
     if p.get("example"):      lines.append(f"пример: {p['example']}")

@@ -1062,6 +1062,20 @@ def find_word_id(word):
                       (word.strip(),)).fetchone()
     return r["word_id"] if r else None
 
+def find_ru_clash(ru, exclude_word=None):
+    """Найти слова в content с таким же ru (без учёта регистра/пробелов).
+    Python-сравнение: SQLite LOWER() не покрывает кириллицу.
+    Возвращает список слов-дублей (исключая exclude_word, если задан)."""
+    if not ru:
+        return []
+    target = ru.strip().lower()
+    with _conn() as c:
+        rows = c.execute("SELECT word, ru FROM content WHERE ru IS NOT NULL").fetchall()
+    results = [r["word"] for r in rows if r["ru"] and r["ru"].strip().lower() == target]
+    if exclude_word:
+        results = [w for w in results if w.lower() != exclude_word.lower()]
+    return results
+
 def _itog_can_move(word_id, user_id):
     """A1.1: ИТОГ двигает SRS осторожно. False — слово введено СЕГОДНЯ (только что
     закодировано, интервала не было — «вспомнил» тривиален) или уже двигалось ИТОГом
