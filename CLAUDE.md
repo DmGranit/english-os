@@ -7,8 +7,9 @@
 - Пинг идёт через владельца. Файлы вне git, вне канона.
 
 ## Session captures
-- Папка: `C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\` (вне репо)
-- Скрипт манифеста: `python C:\Users\Super Assistent\.claude\skills\session-capture\scripts\git_manifest.py --repo C:\CLAUDE_CODE_PROJECTS\English_OS\english_os_bot`
+- Папка: `C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\` (вне репо, не коммитится)
+- Скил: `.claude/skills/session-capture/` (project-scoped, НЕ глобальный)
+- Скрипт манифеста: `PYTHONUTF8=1 python .claude/skills/session-capture/scripts/git_manifest.py --repo .`
 
 ## SSOT
 - Код и план: `origin/main` (GitHub `DmGranit/english-os`)
