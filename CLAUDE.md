@@ -5,6 +5,7 @@
 - `R2W.md` — пишет ТОЛЬКО reviewer → executor
 - `W2R.md` — пишет ТОЛЬКО executor → reviewer
 - Пинг идёт через владельца. Файлы вне git, вне канона.
+- **Старт сессии:** читай `R2W.md` — там указания от ревьюера.
 
 ## Session captures
 - Папка: `C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\` (вне репо, не коммитится)
