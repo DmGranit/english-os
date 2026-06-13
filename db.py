@@ -668,6 +668,23 @@ def scenario_list(min_n=5):
                WHERE scenario IS NOT NULL AND scenario<>'' GROUP BY scenario
                HAVING n >= ? ORDER BY n DESC""", (min_n,)).fetchall()]
 
+def scenario_deficit():
+    """Число слов в content по (scenario, level) — для отчёта /fill.
+    Возвращает {scenario: {level: count, ...}, ...}."""
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT scenario, level, COUNT(*) n FROM content
+            WHERE scenario IS NOT NULL AND level IS NOT NULL
+            GROUP BY scenario, level ORDER BY scenario, level
+        """).fetchall()
+    agg = {}
+    for r in rows:
+        scn = r["scenario"]
+        if scn not in agg:
+            agg[scn] = {}
+        agg[scn][r["level"]] = r["n"]
+    return agg
+
 def theme_words(axis, value, user_id=DEFAULT_USER, n=5, band=None):
     """Слова темы (axis 'idea'|'scn'): сначала ещё не введённые (new), потом любые.
     band — полоса комфорта: слова уровня полосы и ниже идут первыми (скрытая адаптация)."""

@@ -1500,25 +1500,34 @@ async def on_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ---------- /fill: батч-наполнение сценария (админ) ----------
 async def fill_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/fill <сценарий> [N] — подбор N слов из частотных бизнес-списков ->
-    enrich (7 слоёв) -> очередь /pending. Дубли отсеиваются на обоих шагах."""
+    """/fill [<сценарий>] [N] [уровень] — подбор N слов из частотных бизнес-списков ->
+    enrich (7 слоёв) -> очередь /pending. Без аргументов — отчёт дефицитов."""
     if OWNER_ID and _learner(update) != OWNER_ID:
         await update.message.reply_text("Наполнение базы — только у администратора.")
         return
     args = list(ctx.args or [])
+    level = None
+    if args and args[-1].upper() in enrich.LEVELS:
+        level = args.pop().upper()
     n = 10
     if args and args[-1].isdigit():
         n = max(1, min(int(args.pop()), 25))
     scenario = " ".join(args).strip()
     if not scenario:
-        topics = ", ".join(f"{s} ({k})" for s, k in db.scenario_list(min_n=1))
-        await update.message.reply_text(
-            "Формат: /fill <сценарий> [сколько слов, до 25]\n"
-            "Например: /fill Restaurant 15\n\n"
-            f"Сценарии сейчас: {topics}")
+        deficit = db.scenario_deficit()
+        lines = ["📊 Слова в базе по сценариям:\n"]
+        for scn in sorted(deficit):
+            by_lvl = deficit[scn]
+            total = sum(by_lvl.values())
+            breakdown = " ".join(f"{lvl}:{cnt}" for lvl, cnt in sorted(by_lvl.items()))
+            lines.append(f"• {scn}: {total} ({breakdown})")
+        lines.append("\nФормат: /fill <сценарий> [N] [A2|B1|B2]\nНапример: /fill «Asking for help» 10 A2")
+        await update.message.reply_text("\n".join(lines))
         return
-    await update.message.reply_text(f"⏳ Подбираю до {n} слов для «{scenario}» по частотным спискам…")
-    words = await asyncio.to_thread(enrich.suggest_words, scenario, n)
+    level_tag = f" [{level}]" if level else ""
+    await update.message.reply_text(
+        f"⏳ Подбираю до {n} слов для «{scenario}»{level_tag} по частотным спискам…")
+    words = await asyncio.to_thread(enrich.suggest_words, scenario, n, level)
     if not words:
         await update.message.reply_text(
             "Не вышло подобрать слова (модель не дала список или всё уже в базе). Попробуй ещё раз.")

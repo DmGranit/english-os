@@ -34,15 +34,18 @@ _JSON = re.compile(r"\{.*\}", re.DOTALL)       # достаём JSON-объек�
 _JSON_ARR = re.compile(r"\[.*\]", re.DOTALL)   # достаём JSON-массив (suggest_words)
 
 
-def suggest_words(scenario, n=10):
+def suggest_words(scenario, n=10, level=None):
     """Подобрать до n слов под сценарий из частотных бизнес-списков (NGSL Business,
-    Oxford 3000/5000), которых ещё нет в базе. Дубли и имеющиеся отсеиваются."""
+    Oxford 3000/5000), которых ещё нет в базе. Дубли и имеющиеся отсеиваются.
+    level — CEFR-уровень (A2, B1, B2, ...) для целевого подбора."""
     with db._conn() as c:
         existing = [r["word"] for r in c.execute("SELECT word FROM content ORDER BY word")]
+    level_hint = f" Приоритет — слова уровня {level}." if level else ""
     system = (
         "Ты — лексикограф делового английского. Подбери частотные, реально полезные "
         "слова и короткие словосочетания уровня A2–C1 под заданный сценарий, опираясь "
-        "на частотные списки (NGSL Business, Oxford 3000/5000). "
+        "на частотные списки (NGSL Business, Oxford 3000/5000)."
+        + level_hint + " "
         "Верни СТРОГО один JSON-массив строк, без пояснений вокруг.\n"
         "Этих слов НЕ предлагать (уже в базе): " + ", ".join(existing))
     raw = llm.chat(system, [{"role": "user",

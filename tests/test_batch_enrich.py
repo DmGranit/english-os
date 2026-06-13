@@ -24,6 +24,44 @@ def test_suggest_words_garbage_reply(fresh_db, monkeypatch):
     assert enrich.suggest_words("Restaurant", n=5) == []
 
 
+def test_suggest_words_level_in_prompt(fresh_db, monkeypatch):
+    captured = {}
+    def fake_chat(system, messages, **k):
+        captured["system"] = system
+        return '["word1", "word2"]'
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    enrich.suggest_words("Restaurant", n=5, level="A2")
+    assert "A2" in captured["system"]
+
+
+def test_suggest_words_no_level_no_hint(fresh_db, monkeypatch):
+    captured = {}
+    def fake_chat(system, messages, **k):
+        captured["system"] = system
+        return '["word1"]'
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    enrich.suggest_words("Restaurant", n=5)
+    assert "Приоритет" not in captured["system"]
+
+
+# ---------- scenario_deficit: отчёт дефицитов ----------
+
+def test_scenario_deficit_returns_counts(fresh_db):
+    deficit = db.scenario_deficit()
+    # conftest WORDS: invest B1/Pitching, deadline B1/Status update,
+    #                 revenue B2/Pitching, stakeholder B2/Negotiating
+    assert deficit["Pitching"] == {"B1": 1, "B2": 1}
+    assert deficit["Status update"] == {"B1": 1}
+    assert deficit["Negotiating"] == {"B2": 1}
+
+
+def test_scenario_deficit_empty_db(tmp_path, monkeypatch):
+    import db as _db
+    monkeypatch.setattr(_db, "DB_PATH", str(tmp_path / "empty.db"))
+    _db.init_db()
+    assert _db.scenario_deficit() == {}
+
+
 # ---------- run(scenario=...): принудительный тег сценария ----------
 
 def _fake_payload(word):
