@@ -8,8 +8,10 @@
 
 ## Session captures
 - Папка: `C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\` (вне репо, не коммитится)
-- Скил: `.claude/skills/session-capture/` (project-scoped, НЕ глобальный)
-- Скрипт манифеста: `PYTHONUTF8=1 python .claude/skills/session-capture/scripts/git_manifest.py --repo .`
+- Скил: `session-capture-engbot` · папка `.claude/skills/session-capture/` (project-scoped)
+- Маркер: `.claude/last_capture_ref` (в .gitignore — HEAD прошлого захвата, не коммитится)
+- Скрипт манифеста: `PYTHONUTF8=1 python .claude/skills/session-capture/scripts/git_manifest.py --repo . --marker-file .claude/last_capture_ref`
+- ⚠️ Платформа не авто-загружает project-scoped скилы — выполнять вручную по SKILL.md
 
 ## SSOT
 - Код и план: `origin/main` (GitHub `DmGranit/english-os`)
