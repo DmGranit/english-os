@@ -1,14 +1,15 @@
 ---
-name: session-capture
+name: session-capture-engbot
 description: >-
-  Скил фиксации рабочей сессии проекта English OS Bot для кросс-сессионной непрерывности.
+  Скил фиксации рабочей сессии English OS Bot для кросс-сессионной непрерывности.
   Используй, когда оператор просит «зафиксируй сессию» / «session capture» / «сохрани
   контекст» (обычно в конце сессии). Режимы: «зафиксируй» = light (git-манифест .md +
   JSON-капсула); «зафиксируй полностью» = full (FULL.md разбор + JSON + опц. Internal-
   transfer для стерео/resume). Каркас из git (faithful), синтез из контекста. Non-canon.
+  Проект: english_os_bot · Захваты: C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\
 ---
 
-# session-capture (english-os-bot)
+# session-capture-engbot (english-os-bot)
 # Version: v0.1 · Status: Draft · Class: meta/ops
 # Companion: scripts/git_manifest.py
 # Repo: C:\CLAUDE_CODE_PROJECTS\English_OS\english_os_bot
@@ -72,3 +73,4 @@ Empty-delta guard: `commits=0` И `uncommitted=0` с прошлой капсул
 
 # ChangeLog
 # v0.1 | 2026-06-13 | Адаптация универсального двигателя под english-os-bot (governance убрана; captures вне репо).
+# v0.2 | 2026-06-13 | Переименован в session-capture-engbot — устранение коллизии с Navigator (одинаковое name: session-capture).
