@@ -10,7 +10,7 @@ description: >-
 ---
 
 # session-capture-engbot (english-os-bot)
-# Version: v0.1 · Status: Draft · Class: meta/ops
+# Version: v0.3 · Status: Draft · Class: meta/ops
 # Companion: scripts/git_manifest.py
 # Repo: C:\CLAUDE_CODE_PROJECTS\English_OS\english_os_bot
 # Output: C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\
@@ -26,25 +26,40 @@ description: >-
   Решает человек.
 
 ## 3. Источники (детерминированный каркас)
-1. Время: shell `date '+%Y-%m-%d_%H%M'` для имён; человекочитаемое `date` в тело. НЕ выдумывай.
-2. Манифест: `python .claude/skills/session-capture/scripts/git_manifest.py --repo . --timestamp "$TS"`
-   → коммиты+файлы С ПРОШЛОЙ КАПСУЛЫ. Каркас «что сделано» ОТСЮДА, не из памяти.
+Манифест (коммиты + файлы с прошлой капсулы, timestamp — из скрипта):
+```
+PYTHONUTF8=1 python .claude/skills/session-capture/scripts/git_manifest.py \
+  --repo . --marker-file .claude/last_capture_ref
+```
+Скрипт сам генерирует timestamp (datetime.now()). Каркас «что сделано» бери ОТСЮДА, не из памяти.
 
 ## 4. Пути (проектные)
 - Репо бота: `C:\CLAUDE_CODE_PROJECTS\English_OS\english_os_bot`
 - Session captures: `C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\` (вне репо, не коммитится)
+- Маркер: `.claude/last_capture_ref` (в .gitignore, не коммитится)
 - Стерео-ящик: `C:\stereo\english_os\` (W2R.md — executor→reviewer)
 
 ## 5. Light — 2 файла в SESSION_CAPTURES/
 - `Session_Capture_<ts>.md`: git-манифест + 3–5 строк синтеза (о чём сессия, ключевое
-  решение, указатель состояния) + открытые вопросы + лоссовая пометка («длинная сессия —
-  раннее могло быть сжато компакцией; истина = git + артефакты»).
-- `Session_Capture_<ts>.json`: `{date, mode, manifest:{commits,files}, summary,
-  decisions[], state, open_questions[], lossy_note}`.
+  решение, указатель состояния) + открытые вопросы + лоссовая пометка.
+- `Session_Capture_<ts>.json`:
+  ```json
+  {
+    "date": "<ts>",
+    "mode": "light",
+    "manifest": {
+      "timestamp": "...", "since_ref": "...", "scope": "...",
+      "commits": [], "files_changed_stat": [], "uncommitted": []
+    },
+    "decisions": [],
+    "state": {},
+    "open_questions": [],
+    "lossy_note": ""
+  }
+  ```
 
 ## 6. Full — 2–3 файла
-- `Session_Capture_<ts>_FULL.md` — полный разбор (нити, решения с обоснованием, состояние,
-  открытые вопросы). Заменяет тонкий .md.
+- `Session_Capture_<ts>_FULL.md` — полный разбор. Заменяет тонкий .md.
 - `Session_Capture_<ts>.json` — та же капсула.
 - (опц.) `Context_Transfer_<ts>_Internal.md` — якоря состояния, next step, индекс файлов.
 
@@ -63,14 +78,29 @@ description: >-
 2. Тупики/ошибки честно? 3. Заземление в git-манифест? 4. FACT/ASSESS? 5. Решения не выдуманы?
 
 ## 10. Поток
-`режим → date($TS) → git_manifest → [empty-delta guard] → синтез(FACT/ASSESS) →
-самопроверка → записать в SESSION_CAPTURES/ → [full: предложить память] →
-отчёт владельцу`.
+```
+git_manifest.py --repo . --marker-file .claude/last_capture_ref
+  → читает .claude/last_capture_ref → since_ref
+  → генерирует манифест + timestamp
 
-Captures вне репо → НЕ коммитить (git add не нужен).
-Empty-delta guard: `commits=0` И `uncommitted=0` с прошлой капсулы → НЕ плоди файлы,
-сообщи «ничего нового — капсула не нужна», заверши.
+[empty-delta guard]: commits=0 И uncommitted=0 → НЕ пиши файлы, сообщи «ничего нового»
+
+синтез (FACT/ASSESS) → самопроверка §9
+
+записать Session_Capture_<ts>.md  ← в SESSION_CAPTURES/
+записать Session_Capture_<ts>.json ← в SESSION_CAPTURES/
+
+ТОЛЬКО ПОСЛЕ ОБОИХ ФАЙЛОВ:
+  записать текущий HEAD в .claude/last_capture_ref
+  (Write tool: одна строка — sha из `git -C . rev-parse HEAD`)
+
+отчёт владельцу: что записано + scope манифеста + подсказка про узловую
+```
+
+Captures и маркер вне git → git add НЕ нужен.
 
 # ChangeLog
-# v0.1 | 2026-06-13 | Адаптация универсального двигателя под english-os-bot (governance убрана; captures вне репо).
-# v0.2 | 2026-06-13 | Переименован в session-capture-engbot — устранение коллизии с Navigator (одинаковое name: session-capture).
+# v0.1 | 2026-06-13 | Адаптация универсального двигателя под english-os-bot.
+# v0.2 | 2026-06-13 | Переименован в session-capture-engbot (коллизия с Navigator).
+# v0.3 | 2026-06-14 | Маркерный файл last_capture_ref; datetime.now() в скрипте;
+#                      зафиксирована JSON-схема; R2W.md исправлен.
