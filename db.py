@@ -8,7 +8,7 @@ English OS — слой данных и SRS.
   pending  — слова, сгенерённые агентом, ждущие подтверждения человеком.
   reviews  — журнал повторений (для аналитики).
 """
-import sqlite3, json, shutil, datetime, os, re
+import sqlite3, json, shutil, datetime, os, re, random
 from contextlib import contextmanager
 
 DB_PATH = os.environ.get("ENGLISH_OS_DB", "english_os.db")
@@ -775,12 +775,17 @@ def mature_words(user_id=DEFAULT_USER, limit=60):
     return [_row_to_word(r) for r in rows]
 
 def target_words(user_id=DEFAULT_USER, limit=4):
-    """Незрелые активные слова (learning/forgot, box<3) — это «новые ~2%» для текста ввода."""
+    """Незрелые активные слова (learning/forgot, box<3) — это «новые ~2%» для текста ввода.
+    B8: из приоритетного пула (3×limit) берём случайные limit — два /read подряд не крутят
+    одни и те же слова. Пул узок (< limit) → отдаём всё; рандом включается, когда есть из чего."""
     with _conn() as c:
         rows = c.execute("""SELECT c.* FROM state s JOIN content c USING(word_id)
                             WHERE s.user_id=? AND s.status IN ('learning','forgot') AND s.box<3
                             ORDER BY c.priority DESC, c.word_id ASC LIMIT ?""",
-                         (user_id, limit)).fetchall()
+                         (user_id, limit * 3)).fetchall()
+    rows = list(rows)
+    if len(rows) > limit:
+        rows = random.sample(rows, limit)
     return [_row_to_word(r) for r in rows]
 
 def new_remaining(user_id=DEFAULT_USER):
