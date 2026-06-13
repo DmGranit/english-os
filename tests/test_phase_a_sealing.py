@@ -55,12 +55,50 @@ def test_word_after_add_goes_to_enrich_not_feedback(fresh_db, monkeypatch):
 
 # ---------- B1: стоп-слово как ОТВЕТ на карточку не завершает сессию ----------
 
-def _deck_ctx(text_attempt, finish):
-    return text_attempt, finish
+def test_english_stop_on_typed_card_goes_to_typed(fresh_db, monkeypatch):
+    """Английское «stop» во время typed-карточки → ответ на карточку, не конец сессии.
+    Бот ждёт английское слово; «stop» может быть правильным ответом."""
+    calls = []
+    async def fake_typed(update, ctx, uid, text): calls.append(("typed", text))
+    async def fake_finish(ud, uid, send): calls.append(("finish", None))
+    monkeypatch.setattr(bot, "_handle_typed_answer", fake_typed)
+    monkeypatch.setattr(bot, "_finish_session", fake_finish)
+
+    sent = []
+    update = types.SimpleNamespace(message=_msg(sent),
+                                   effective_user=types.SimpleNamespace(id=UID))
+    ctx = types.SimpleNamespace(user_data={
+        "review_queue": [1], "review_pos": 0, "card_shown_at": time.time(),
+        "typed_wid": 1})
+    asyncio.run(bot._process_user_text(update, ctx, UID, "Stop"))
+
+    assert ("typed", "Stop") in calls
+    assert ("finish", None) not in calls
 
 
-def test_stop_word_on_active_card_goes_to_card(fresh_db, monkeypatch):
-    """«Stop» во время свежей карточки = попытка ответа, а не конец сессии (B1)."""
+def test_russian_stop_on_typed_card_ends_session(fresh_db, monkeypatch):
+    """Русское «Итог»/«Стоп» во время typed-карточки → завершает сессию.
+    Кириллица — точно не ответ на английскую typed-карточку."""
+    calls = []
+    async def fake_typed(update, ctx, uid, text): calls.append(("typed", text))
+    async def fake_finish(ud, uid, send): calls.append(("finish", None))
+    monkeypatch.setattr(bot, "_handle_typed_answer", fake_typed)
+    monkeypatch.setattr(bot, "_finish_session", fake_finish)
+
+    sent = []
+    update = types.SimpleNamespace(message=_msg(sent),
+                                   effective_user=types.SimpleNamespace(id=UID))
+    ctx = types.SimpleNamespace(user_data={
+        "review_queue": [1], "review_pos": 0, "card_shown_at": time.time(),
+        "typed_wid": 1})
+    asyncio.run(bot._process_user_text(update, ctx, UID, "Стоп"))
+
+    assert ("finish", None) in calls
+    assert ("typed", "Стоп") not in calls
+
+
+def test_english_stop_on_mcq_card_ends_session(fresh_db, monkeypatch):
+    """«Stop» во время mcq/self-rate карточки (typed_wid не установлен) → завершает сессию."""
     calls = []
     async def fake_card(update, ctx, uid, text): calls.append(("card", text))
     async def fake_finish(ud, uid, send): calls.append(("finish", None))
@@ -74,27 +112,28 @@ def test_stop_word_on_active_card_goes_to_card(fresh_db, monkeypatch):
         "review_queue": [1], "review_pos": 0, "card_shown_at": time.time()})
     asyncio.run(bot._process_user_text(update, ctx, UID, "Stop"))
 
-    assert ("card", "Stop") in calls                    # ответ ушёл в карточку
-    assert ("finish", None) not in calls                # сессия НЕ завершена
+    assert ("finish", None) in calls
+    assert ("card", "Stop") not in calls
 
 
-def test_explicit_itog_button_still_ends_during_deck(fresh_db, monkeypatch):
-    """Явная кнопка «🏁 Итог» во время колоды по-прежнему завершает сессию."""
+def test_explicit_itog_button_still_ends_during_typed(fresh_db, monkeypatch):
+    """Явная кнопка «🏁 Итог» завершает сессию даже если typed_wid установлен."""
     calls = []
-    async def fake_card(update, ctx, uid, text): calls.append(("card", text))
+    async def fake_typed(update, ctx, uid, text): calls.append(("typed", text))
     async def fake_finish(ud, uid, send): calls.append(("finish", None))
-    monkeypatch.setattr(bot, "_text_attempt_on_card", fake_card)
+    monkeypatch.setattr(bot, "_handle_typed_answer", fake_typed)
     monkeypatch.setattr(bot, "_finish_session", fake_finish)
 
     sent = []
     update = types.SimpleNamespace(message=_msg(sent),
                                    effective_user=types.SimpleNamespace(id=UID))
     ctx = types.SimpleNamespace(user_data={
-        "review_queue": [1], "review_pos": 0, "card_shown_at": time.time()})
+        "review_queue": [1], "review_pos": 0, "card_shown_at": time.time(),
+        "typed_wid": 1})
     asyncio.run(bot._process_user_text(update, ctx, UID, bot.BTN_END))
 
-    assert ("finish", None) in calls                    # кнопка завершает
-    assert all(c[0] != "card" for c in calls)           # в карточку не ушло
+    assert ("finish", None) in calls
+    assert all(c[0] != "typed" for c in calls)
 
 
 # ---------- B2: фолбэк _swap_in рендерит HTML, а не сырой markdown ----------

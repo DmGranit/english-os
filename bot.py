@@ -709,15 +709,21 @@ async def _process_user_text(update, ctx, uid, text):
 
     # завершение сессии: слово-триггер, естественная фраза или кнопка «🏁 Итог»
     if _is_end_trigger(text):
-        # B1: стоп-слово как ОТВЕТ на свежую карточку колоды = попытка ответа, не конец сессии.
-        # Явная кнопка «🏁 Итог» (BTN_END) завершает всегда — она в END_WORDS, не в MAIN_BUTTONS,
-        # поэтому исключаем её адресно (наивно опускать end-trigger ниже колоды нельзя).
-        queue = ctx.user_data.get("review_queue") or []
-        pos = ctx.user_data.get("review_pos", 0)
-        fresh = time.time() - ctx.user_data.get("card_shown_at", 0) < 600
-        if text != BTN_END and pos < len(queue) and fresh:
-            await _text_attempt_on_card(update, ctx, uid, text)
-            return
+        # B1: стоп-слово перехватывается только если бот явно ждёт напечатанный ответ
+        # (typed_wid — box 3) или тёплый ответ (warm_wid). Тогда текст — это попытка ответа,
+        # даже если совпадает со стоп-словом («stop» как ответ на карточку «stop»).
+        # В остальных случаях (mcq, self-rate кнопки) стоп-слово завершает сессию штатно.
+        # BTN_END («🏁 Итог») завершает всегда — исключение адресное.
+        if text != BTN_END:
+            # typed_wid: бот ждёт английское слово. Только если текст без кириллицы —
+            # это попытка ответа (англ. «stop»/«done» как слово). Кириллица = русское
+            # стоп-слово («итог», «стоп») = намерение завершить → не перехватываем.
+            if ctx.user_data.get("typed_wid") and not re.search(r"[а-яёА-ЯЁ]", text):
+                await _handle_typed_answer(update, ctx, uid, text)
+                return
+            if ctx.user_data.get("warm_wid") and not re.search(r"[а-яёА-ЯЁ]", text):
+                await _handle_warm_answer(update, ctx, uid, text)
+                return
         await _typing(update.message)
         await _finish_session(ctx.user_data, uid, update.message.reply_text)
         return
