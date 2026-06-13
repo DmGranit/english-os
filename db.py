@@ -94,6 +94,12 @@ CREATE TABLE IF NOT EXISTS tech_errors (
 -- описания слоёв (reference): этимология корней и пояснения фреймов
 CREATE TABLE IF NOT EXISTS root_ref  (root TEXT PRIMARY KEY, idea TEXT, origin TEXT);
 CREATE TABLE IF NOT EXISTS frame_ref (name TEXT PRIMARY KEY, ru TEXT, when_use TEXT, example TEXT);
+-- снапшот словников can-do: фиксирует набор слов ДО контент-волн (Dm5)
+CREATE TABLE IF NOT EXISTS cando_words (
+    cando_id TEXT NOT NULL,
+    word_id  INTEGER NOT NULL REFERENCES content(word_id),
+    PRIMARY KEY (cando_id, word_id)
+);
 CREATE INDEX IF NOT EXISTS ix_coll_text   ON word_collocation(text);
 CREATE INDEX IF NOT EXISTS ix_fam_member  ON word_family(member);
 CREATE INDEX IF NOT EXISTS ix_content_root ON content(root);
@@ -1240,19 +1246,66 @@ def progress_summary(user_id=DEFAULT_USER):
             "accuracy": round(ok / reviews * 100) if reviews else None,
             "since": first, "nation_target": NATION_TARGET}
 
+def cando_snapshot(force=False):
+    """Зафиксировать текущий набор слов по сценарию в cando_words (Dm5).
+    Идемпотентно: пропускает can-do, у которых снапшот уже есть (если не force=True).
+    Возвращает dict {cando_id: words_added}."""
+    added = {}
+    with _conn() as c:
+        for cd in CANDO:
+            if not force:
+                exists = c.execute(
+                    "SELECT 1 FROM cando_words WHERE cando_id=? LIMIT 1",
+                    (cd["id"],)
+                ).fetchone()
+                if exists:
+                    added[cd["id"]] = 0
+                    continue
+            rows = c.execute(
+                "SELECT word_id FROM content WHERE scenario=?",
+                (cd["scenario"],)
+            ).fetchall()
+            n = 0
+            for r in rows:
+                try:
+                    c.execute("INSERT OR IGNORE INTO cando_words(cando_id, word_id) VALUES(?,?)",
+                              (cd["id"], r["word_id"]))
+                    n += 1
+                except Exception:
+                    pass
+            added[cd["id"]] = n
+    return added
+
 def cando_progress(user_id=DEFAULT_USER, ready_ratio=0.6):
-    """Прогресс по can-do: доля освоенных (known/box>=3) слов в сценарии каждого пункта.
-    ready = есть слова, доля >= ready_ratio и освоено хотя бы 2. Прокси, не сертификация."""
+    """Прогресс по can-do: доля освоенных (known/box>=3) слов сценария.
+    Знаменатель — снапшот cando_words (Dm5); если снапшота нет — живой счёт.
+    ready = есть слова, доля >= ready_ratio и освоено хотя бы 2."""
     out = []
     with _conn() as c:
         for cd in CANDO:
-            row = c.execute("""SELECT COUNT(*) total,
-                       SUM(CASE WHEN s.status='known' OR s.box>=3 THEN 1 ELSE 0 END) mastered
-                     FROM content cc JOIN state s USING(word_id)
-                     WHERE s.user_id=? AND cc.scenario=?""",
-                    (user_id, cd["scenario"])).fetchone()
-            total = row["total"] or 0
-            mastered = row["mastered"] or 0
+            snap_rows = c.execute(
+                """SELECT COUNT(*) snap_total,
+                          SUM(CASE WHEN s.status='known' OR s.box>=3 THEN 1 ELSE 0 END) mastered
+                   FROM cando_words cw
+                   LEFT JOIN state s ON s.word_id=cw.word_id AND s.user_id=?
+                   WHERE cw.cando_id=?""",
+                (user_id, cd["id"])
+            ).fetchone()
+            snap_total = snap_rows["snap_total"] or 0
+            if snap_total > 0:
+                total = snap_total
+                mastered = snap_rows["mastered"] or 0
+            else:
+                # снапшота нет — фолбэк на живой счёт (до первого cando_snapshot())
+                live = c.execute(
+                    """SELECT COUNT(*) total,
+                              SUM(CASE WHEN s.status='known' OR s.box>=3 THEN 1 ELSE 0 END) mastered
+                       FROM content cc JOIN state s USING(word_id)
+                       WHERE s.user_id=? AND cc.scenario=?""",
+                    (user_id, cd["scenario"])
+                ).fetchone()
+                total = live["total"] or 0
+                mastered = live["mastered"] or 0
             pct = round(mastered / total, 2) if total else 0.0
             out.append({**cd, "mastered": mastered, "total": total, "pct": pct,
                         "ready": total > 0 and pct >= ready_ratio and mastered >= 2})

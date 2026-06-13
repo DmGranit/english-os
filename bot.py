@@ -2200,6 +2200,7 @@ def main():
     if not TOKEN:
         raise SystemExit("Задай TELEGRAM_TOKEN")
     db.init_db()    # схема + миграции при каждом старте (идемпотентно) — не руками
+    db.cando_snapshot()  # Dm5: снапшот can-do словников (идемпотентно)
     db.ensure_roles(OWNER_ID, ALLOWED_USERS)   # env-список -> роли (бесшовный переход)
     from logging.handlers import RotatingFileHandler
     fh = RotatingFileHandler("bot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
