@@ -644,15 +644,22 @@ def log_session(user_id, mode):
                   (user_id, datetime.datetime.now().isoformat(), _today(), mode))
 
 def day_map(user_id, day=None):
-    """Карта дня: закрыты ли слоты. NEW — введены слова сегодня (кнопкой 🌅 или прямой
-    просьбой; сценарные слова НЕ закрывают слот — A1.3); REVIEW — было повторение
-    сегодня; SCENARIO — завершена сценарная сессия сегодня."""
+    """Карта дня: закрыты ли слоты.
+    NEW — B-enc1: урок завершён сегодня (sessions mode='new'/'lesson') ИЛИ прямое
+          введение слов ('direct'); сценарные слова НЕ закрывают слот (A1.3).
+    REVIEW — было повторение сегодня.
+    SCENARIO — завершена сценарная сессия сегодня."""
     day = day or _today()
     with _conn() as c:
-        new = c.execute("""SELECT 1 FROM state WHERE user_id=? AND promoted_at=?
-                           AND (promoted_via IS NULL OR promoted_via IN ('new','direct'))
-                           LIMIT 1""",
-                        (user_id, day)).fetchone() is not None
+        new_lesson = c.execute("""SELECT 1 FROM sessions WHERE user_id=? AND date=?
+                                  AND mode IN ('new','lesson')
+                                  LIMIT 1""",
+                               (user_id, day)).fetchone() is not None
+        new_direct = c.execute("""SELECT 1 FROM state WHERE user_id=? AND promoted_at=?
+                                  AND promoted_via='direct'
+                                  LIMIT 1""",
+                               (user_id, day)).fetchone() is not None
+        new = new_lesson or new_direct
         rev = c.execute("SELECT 1 FROM reviews WHERE user_id=? AND ts LIKE ? LIMIT 1",
                         (user_id, day + "%")).fetchone() is not None
         scn = c.execute("""SELECT 1 FROM sessions WHERE user_id=? AND date=?

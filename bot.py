@@ -605,10 +605,19 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
                        f"Давай закрепим: ☀️ Повторить или 📖 Читать. Новые — завтра 🌙")
             await out(msg)
             return
-        seed = ("Познакомь КРАТКО с новыми словами на сегодня: слово — перевод, 1 живой пример, "
-                "1 коллокация. Без разбора корней/слоёв (это под кнопкой 🔍). "
-                "В конце предложи составить свою фразу.\n" + db.format_for_agent(words))
-        await _ask(out, ctx, mode, seed, uid, markup=_deep_kb(words), tmsg=tmsg)
+        # B-enc1: структурированный урок вместо LLM-вступления
+        # Слова уже введены (promote_new → box=1, promoted_via='new').
+        # Критерий слота NEW: завершение урока (_finish_lesson → log_session('new')).
+        ctx.user_data["mode"] = "lesson"
+        wids = [w["word_id"] for w in words]
+        ctx.user_data["review_queue"]    = wids
+        ctx.user_data["review_box"]      = {wid: 1 for wid in wids}  # все box 1 → MCQ
+        ctx.user_data["review_pos"]      = 0
+        ctx.user_data["review_ok"]       = 0
+        ctx.user_data["review_fail"]     = 0
+        ctx.user_data["card_shown_at"]   = time.time()
+        text, kb = _card_payload(ctx, uid)
+        await out(text, kb)
 
     elif mode == "review":
         due, st = db.due_today(uid, limit=db.DECK_CAP)   # кап колоды: не марафон на 90 карт
@@ -1212,8 +1221,12 @@ def _asm_kb(order, used):
             for i, t in enumerate(order) if i not in used]
     return InlineKeyboardMarkup([btns[i:i + 3] for i in range(0, len(btns), 3)])
 
-def _asm_question(word, pos, total, picked):
-    head = f"🔁 Повторение · карточка {pos}/{total}"
+def _deck_label(ctx):
+    """Заголовок режима для карточки: урок vs повторение."""
+    return "🌅 Урок" if ctx.user_data.get("mode") == "lesson" else "🔁 Повторение"
+
+def _asm_question(word, pos, total, picked, label="🔁 Повторение"):
+    head = f"{label} · карточка {pos}/{total}"
     built = f"\n👉 {' '.join(picked)}" if picked else ""
     return (f"{head}\n\n🧩 Собери предложение со словом «{word['word']}» ({word['ru']}) — "
             f"тапай слова по порядку. Помни шаблон SVOMPT!{built}")
@@ -1228,11 +1241,12 @@ def _cloze_for(word):
             return pat.sub("___", c)
     return None
 
-def _review_card_text(word, pos, total, reveal, productive, variant="layered", box=1):
+def _review_card_text(word, pos, total, reveal, productive, variant="layered", box=1,
+                      label="🔁 Повторение"):
     """Карточка. Лестница трудности: box 1 — узнавание (EN→RU), box 2 — cloze
     (чанк с пропуском: тренируем коллокацию как единицу), box 3+ — продукция (RU→EN).
     Вариант: layered показывает «сеть» при раскрытии ответа, flat — только ответ (A/B)."""
-    head = f"🔁 Повторение · карточка {pos}/{total}"
+    head = f"{label} · карточка {pos}/{total}"
     ipa = f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else ""
     ex  = f"\nПример: {word['example']}" if word.get("example") else ""
     cloze = _cloze_for(word) if (not productive and box == 2) else None
@@ -1263,6 +1277,7 @@ def _card_payload(ctx, uid, reveal=False):
     word = db.get_word(wid)
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
     productive = box >= db.PRODUCTIVE_FROM_BOX  # зрелое слово -> RU→EN; иначе EN→RU
+    label = _deck_label(ctx)
     ctx.user_data["review_reveal"] = reveal
     ctx.user_data.pop("typed_wid", None)        # карточка сменилась — ожидание ввода снято
     if not reveal and box == 1:                 # box 1: выбор из 4 (объективно, без печати русского)
@@ -1273,12 +1288,12 @@ def _card_payload(ctx, uid, reveal=False):
             kb = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(o["ru"], callback_data=f"mcq:{o['word_id']}")]
                  for o in order])
-            return (f"🔁 Повторение · карточка {pos + 1}/{len(queue)}\n\n"
+            return (f"{label} · карточка {pos + 1}/{len(queue)}\n\n"
                     f"Что значит «{word['word']}»"
                     + (f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else "") + "?", kb)
     if not reveal and box == 3:                 # box 3: продукция вводом текста (объективно)
         ctx.user_data["typed_wid"] = wid
-        return ((f"🔁 Повторение · карточка {pos + 1}/{len(queue)}\n\n"
+        return ((f"{label} · карточка {pos + 1}/{len(queue)}\n\n"
                  f"✍️ Как сказать по-английски:\n«{word['ru']}»  ({word['dna_idea']})\n\n"
                  f"Напиши ответ сообщением."),
                 InlineKeyboardMarkup([[InlineKeyboardButton("🤷 Не помню",
@@ -1289,9 +1304,10 @@ def _card_payload(ctx, uid, reveal=False):
             order = random.sample(toks, len(toks))
             ctx.user_data.update(asm_target=toks, asm_order=order, asm_used=[],
                                  asm_picked=[], asm_errors=0, asm_wid=wid)
-            return (_asm_question(word, pos + 1, len(queue), []), _asm_kb(order, []))
+            return (_asm_question(word, pos + 1, len(queue), [], label=label),
+                    _asm_kb(order, []))
     return (_review_card_text(word, pos + 1, len(queue), reveal, productive,
-                              _variant(uid, wid), box=box),
+                              _variant(uid, wid), box=box, label=label),
             _review_kb(reveal))
 
 async def _show_card(q, ctx, uid, reveal=False):
@@ -1404,11 +1420,31 @@ async def _record_review(ctx, uid, word_id, remembered, ms, card_type="self"):
     key = "review_ok" if remembered else "review_fail"
     ctx.user_data[key] = ctx.user_data.get(key, 0) + 1
 
+async def _finish_lesson(q, ctx, uid):
+    """Урок завершён: записать след → закрывает слот NEW в карте дня (B-enc1)."""
+    ok   = ctx.user_data.get("review_ok", 0)
+    fail = ctx.user_data.get("review_fail", 0)
+    db.log_session(uid, "new")
+    db.backup()
+    for k in ("review_queue", "review_pos", "review_ok", "review_fail",
+              "review_box", "review_reveal", "deck_more"):
+        ctx.user_data.pop(k, None)
+    ctx.user_data["mode"] = "flow"
+    await q.edit_message_text(
+        f"🌅 Урок завершён!\n\n"
+        f"Слов: {ok + fail}\n✅ Узнал: {ok}\n❌ Не вспомнил: {fail}\n\n"
+        "Слова теперь в очереди — вернутся завтра на повторение 📅"
+    )
+    await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
+
 async def _next_card(q, ctx, uid):
-    """Сдвинуть колоду: следующая карточка или финал."""
+    """Сдвинуть колоду: следующая карточка или финал (урок/повторение)."""
     ctx.user_data["review_pos"] = ctx.user_data.get("review_pos", 0) + 1
     if ctx.user_data["review_pos"] >= len(ctx.user_data.get("review_queue", [])):
-        await _finish_review(q, ctx, uid)
+        if ctx.user_data.get("mode") == "lesson":
+            await _finish_lesson(q, ctx, uid)
+        else:
+            await _finish_review(q, ctx, uid)
     else:
         await _show_card(q, ctx, uid, reveal=False)
 

@@ -90,8 +90,11 @@ def test_direct_words_close_new_slot(fresh_db):
     assert fresh_db.day_map(UID)["new"] is True
 
 
-def test_promote_new_closes_new_slot(fresh_db):
-    fresh_db.promote_new(UID, n=1)                          # кнопка 🌅
+def test_promote_new_alone_does_not_close_new_slot(fresh_db):
+    # B-enc1: promote_new вводит слова, но слот NEW закрывается урок-завершением
+    fresh_db.promote_new(UID, n=1)
+    assert fresh_db.day_map(UID)["new"] is False            # ещё нет log_session('new')
+    fresh_db.log_session(UID, "new")                        # _finish_lesson
     assert fresh_db.day_map(UID)["new"] is True
 
 
