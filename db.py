@@ -788,6 +788,16 @@ def root_info(root):
         r = c.execute("SELECT root, idea, origin FROM root_ref WHERE root=?", (root,)).fetchone()
     return dict(r) if r else None
 
+def top_mistakes(n=8):
+    """Выборка калёк из mistakes_ref для подсказки модели при ИТОГе (C4).
+    RANDOM() даёт ротацию — не одни и те же 8 каждый раз."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT category, wrong, right, why FROM mistakes_ref ORDER BY RANDOM() LIMIT ?",
+            (n,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
 def bre_ame_for_word(word):
     """BrE/AmE запись для слова (None, если нет). C3.Δb."""
     if not word:
