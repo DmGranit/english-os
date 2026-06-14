@@ -26,5 +26,7 @@ _inspect_*.py
 # прочее
 *.log
 
-# операционный маркер захвата сессии (локальное состояние, не коммитится)
-.claude/last_capture_ref
+# локальная оснастка Claude Code — НЕ коммитится:
+# junction-скил session-capture (SSOT в C:\claude-tooling), профиль и
+# операционный маркер last_capture_ref (HEAD прошлого захвата) — всё локальное состояние
+.claude/

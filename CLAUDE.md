@@ -9,10 +9,12 @@
 
 ## Session captures
 - Папка: `C:\CLAUDE_CODE_PROJECTS\English_OS\SESSION_CAPTURES\` (вне репо, не коммитится)
-- Скил: `session-capture-engbot` · папка `.claude/skills/session-capture/` (project-scoped)
-- Маркер: `.claude/last_capture_ref` (в .gitignore — HEAD прошлого захвата, не коммитится)
-- Скрипт манифеста: `PYTHONUTF8=1 python .claude/skills/session-capture/scripts/git_manifest.py --repo . --marker-file .claude/last_capture_ref`
-- ⚠️ Платформа не авто-загружает project-scoped скилы — выполнять вручную по SKILL.md
+- Движок: единый `session-capture` (SSOT `C:\claude-tooling\skills\session-capture\`), подключён
+  **junction'ом** `.claude/skills/session-capture/` → SSOT (ноль дрейфа). Форк `session-capture-engbot` упразднён.
+- Проектные параметры: `.claude/session-capture-profile.md` (project_name, captures_dir, marker_file и т.д.)
+- Маркер: `.claude/last_capture_ref` — HEAD прошлого захвата (since-anchor; движок читает + пишет write-back)
+- Запуск: командой `/session-capture` → меню Light / Full (NL-триггера «зафиксируй» больше нет)
+- Весь `.claude/` в `.gitignore` (локальная оснастка, не коммитится)
 
 ## SSOT
 - Код и план: `origin/main` (GitHub `DmGranit/english-os`)
