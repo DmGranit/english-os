@@ -971,12 +971,38 @@ async def on_topax(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     axis = q.data.split(":")[1]
     pairs = db.idea_list() if axis == "idea" else db.scenario_list()
-    head = ("🧬 ДНК-идея — это смысл-«магнит», вокруг которого живёт куст близких слов "
-            "(напр. Investment: invest, fund, revenue). Выбери идею:") if axis == "idea" else \
-           "🎭 Сфера/ситуация — где будешь применять язык. Выбери:"
-    btns = [InlineKeyboardButton(f"{name} · {n}", callback_data=f"topic:{axis}:{name}") for name, n in pairs]
+    if axis == "idea":
+        head = ("🧬 ДНК-идея — смысл-«магнит», вокруг которого живёт куст близких слов. "
+                "Нажми — увидишь концепт и мост к английскому мышлению:")
+        btns = [InlineKeyboardButton(f"{name} · {n}", callback_data=f"idcard:{name}")
+                for name, n in pairs]
+    else:
+        head = "🎭 Сфера/ситуация — где будешь применять язык. Выбери:"
+        btns = [InlineKeyboardButton(f"{name} · {n}", callback_data=f"topic:{axis}:{name}")
+                for name, n in pairs]
     rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
     await q.edit_message_text(head, reply_markup=InlineKeyboardMarkup(rows))
+
+async def on_idcard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Карточка DNA-идеи: концепт + thinking_pattern + кнопка «Учить слова»."""
+    q = update.callback_query
+    await q.answer()
+    idea = q.data.split(":", 1)[1]
+    info = db.idea_info(idea)
+    uid = _learner(update)
+    # Счётчик слов в этой идее для кнопки
+    pairs = dict(db.idea_list())
+    n_words = pairs.get(idea, 0)
+    if info:
+        text = (f"🧬 {idea} — {info['ru']}\n\n"
+                f"{info['description']}\n\n"
+                f"💡 Мост к английскому мышлению:\n{info['thinking_pattern']}")
+    else:
+        text = f"🧬 {idea}\n\nСлов в базе: {n_words}"
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"📖 Учить слова ({n_words})", callback_data=f"topic:idea:{idea}")
+    ]])
+    await q.message.reply_text(text, reply_markup=kb)
 
 async def on_topic(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -2265,6 +2291,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_retry, pattern=r"^retry:"))
     app.add_handler(CallbackQueryHandler(on_topics, pattern=r"^topics$"))
     app.add_handler(CallbackQueryHandler(on_topax, pattern=r"^topax:"))
+    app.add_handler(CallbackQueryHandler(on_idcard, pattern=r"^idcard:"))
     app.add_handler(CallbackQueryHandler(on_topic, pattern=r"^topic:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(MessageHandler(filters.VOICE, on_voice))                          # голос -> распознать
