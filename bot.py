@@ -911,13 +911,22 @@ async def _begin_scenario(msg, ctx, uid, scenario):
     db.start_learning(ids, uid, via="scenario")   # A1.3: не закрывает слот NEW в карте дня
     ctx.user_data.pop("awaiting_slot_hours", None)
     ctx.user_data.update(mode="scenario", history=[], scn_words=ids)
+    scn_ref = db.scenario_ref_get(scenario)
+    scn_block = ""
+    if scn_ref:
+        parts = []
+        if scn_ref.get("opener"):      parts.append(f"Открытие: {scn_ref['opener']}")
+        if scn_ref.get("key_phrases"): parts.append(f"Ключевые фразы: {scn_ref['key_phrases']}")
+        if scn_ref.get("closer"):      parts.append(f"Закрытие: {scn_ref['closer']}")
+        if parts:
+            scn_block = "\nСПРАВКА ПО СЦЕНАРИЮ (используй в образце и роли):\n" + "\n".join(parts)
     seed = (f"СЦЕНАРИЙ-СЕССИЯ: «{scenario}». Один ответ, три шага:\n"
             "1) ЦЕЛЕВЫЕ СЛОВА — по строке на каждое: слово — перевод — короткая коллокация.\n"
             "2) ОБРАЗЕЦ — мини-диалог 4–6 реплик по сценарию: ~98% простой лексики + целевые "
             "слова, порядок слов SVOMPT.\n"
             "3) РОЛЬ — войди в собеседника этого сценария и начни сцену первой репликой. "
             "Дальше держи роль по правилам режима (ошибки копи молча до ИТОГа).\n"
-            + db.format_for_agent(wd))
+            + db.format_for_agent(wd) + scn_block)
     system = prompts.assemble("scenario") + "\n\n" + db.learner_profile(uid)
     hist = ctx.user_data["history"]
     _remember(hist, "user", seed)
@@ -1013,6 +1022,10 @@ async def _call(ctx, mode, uid, user_text, with_summary=False):
     if matched:
         system += ("\n\nСЛОВА ИЗ БАЗЫ в реплике (для «💬 Natural» бери ИХ коллокации/сеть, не выдумывай):\n"
                    + db.format_for_agent(matched))
+        anti = db.colloc_anti_matches(matched, user_text)   # C1.b: ловушки коллокаций
+        if anti:
+            system += ("\n\nЛОВУШКИ КОЛЛОКАЦИЙ в реплике (исправь тихо, без лекций; при ИТОГе — разбери):\n"
+                       + "\n".join(f'- «{a}» — неверная коллокация для «{c}»' for c, a in anti))
     scn_ids = ctx.user_data.get("scn_words")   # сценарий-сессия: целевые слова в каждой реплике
     if scn_ids:
         scn_wd = [w for w in (db.get_word(i) for i in scn_ids) if w]

@@ -694,6 +694,40 @@ def root_info(root):
         r = c.execute("SELECT root, idea, origin FROM root_ref WHERE root=?", (root,)).fetchone()
     return dict(r) if r else None
 
+def scenario_ref_get(scenario):
+    """Opener/key_phrases/closer из scenario_ref для грунтовки _begin_scenario (C1.b)."""
+    if not scenario:
+        return None
+    with _conn() as c:
+        r = c.execute(
+            "SELECT opener, key_phrases, closer, context FROM scenario_ref WHERE scenario=?",
+            (scenario,)
+        ).fetchone()
+    return dict(r) if r else None
+
+def colloc_anti_matches(words, text):
+    """Найти anti-коллокации из colloc_ref для слов, встретившихся в тексте (C1.b).
+    words — список dict (из match_words); text — реплика пользователя.
+    Возвращает список (core, anti) для тех ядер, чей anti встречается в тексте."""
+    if not words or not text:
+        return []
+    text_lower = text.lower()
+    cores = [w["word"].lower() for w in words if w.get("word")]
+    if not cores:
+        return []
+    qm = ",".join("?" * len(cores))
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT core, anti FROM colloc_ref WHERE LOWER(core) IN ({qm}) AND anti IS NOT NULL",
+            cores
+        ).fetchall()
+    hits = []
+    for r in rows:
+        anti = (r["anti"] or "").strip().lower()
+        if anti and anti in text_lower:
+            hits.append((r["core"], r["anti"]))
+    return hits
+
 def frame_info(name):
     """Пояснение мыслительного фрейма из reference (None, если нет)."""
     if not name:
