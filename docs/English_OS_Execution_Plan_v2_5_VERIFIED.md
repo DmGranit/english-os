@@ -88,7 +88,7 @@ _(Гипотеза возникла из реплики владельца «о�
 | Утверждение плана | Где | Статус |
 |---|---|---|
 | `reference` = 11 секций; `_seed_reference` грузит **только** «1. Roots» + «7. Thinking Frames» | db.py | ✅ВК — 9 секций мёртвы |
-| Счётчики секций: idea 15, grammar 19, mistakes 33, bre_ame 34, confuse 8, scenario 18, colloc 20, phrasal 41, roots 30, families 30, core verbs 31, frames 25 | english_os.json | ✅ВК — совпали с тестами C1 |
+| Счётчики секций: idea **19** (15 Excel + 4 batch: Commitment/Clarity/Problem→Solution/Health — Decision_Log H), grammar 19, mistakes 33, bre_ame 34, confuse 8, scenario 18, colloc 20, phrasal 41, roots 30, families 30, core verbs 31, frames 25 | english_os.json / `_IDEA_SEED` | ✅ВК C1; idea_ref = `_IDEA_SEED` (канон — Decision_Log H) |
 | `apply_session_summary` зовёт `review()` без защиты `promoted_at`/`card_type` | db.py | ✅ВК — баг разгона SRS открыт |
 | `review()` на провале: `box = 1` (жёсткий сброс), мягкого Лейтнера нет | db.py | ✅ВК |
 | `END_PROMPT` без подстановки даты | bot.py:226 | ✅ВК |
@@ -216,7 +216,7 @@ _(Гипотеза возникла из реплики владельца «о�
 
 **ФАЗА C2–C4 — концепт и теория во вью**
 
-- **C2** 15 DNA-идей как карточки → «Темы»/«Идеи», `idea_info` (из C1). thinking_pattern (мост L1↔L7).
+- **C2** 19 DNA-идей как карточки (15 Excel + 4 batch; Decision_Log H) → «Темы»/«Идеи», `idea_info` (`_IDEA_SEED` канон). thinking_pattern (мост L1↔L7).
 - **C3** теория в «🔍 Глубже» + заметность → `db.deep_view` ✅ВК (текущий состав известен), `_deep_kb` ⚠️Я. += confuse/grammar/bre_ame/ipa_us + заметность. **+ C3.Δa (particle_logic), + C3.Δb (BrE/AmE-онбординг, миграция `dialect` ✅ВК отсутствует).**
 - **C4** каталог калек к движку ошибок → `prompt.md` ИТОГ, `_finish_session` ⚠️Я; подмешивать топ `mistakes_ref`.
 
