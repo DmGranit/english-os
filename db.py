@@ -788,7 +788,7 @@ def root_info(root):
         r = c.execute("SELECT root, idea, origin FROM root_ref WHERE root=?", (root,)).fetchone()
     return dict(r) if r else None
 
-def top_mistakes(n=8):
+def sample_mistakes(n=8):
     """Выборка калёк из mistakes_ref для подсказки модели при ИТОГе (C4).
     RANDOM() даёт ротацию — не одни и те же 8 каждый раз."""
     with _conn() as c:

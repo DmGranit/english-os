@@ -1063,7 +1063,7 @@ async def _call(ctx, mode, uid, user_text, with_summary=False):
             system += (f"\n\nТЫ В РОЛИ: собеседник сценария «{scn_name}». Держи роль как живой "
                        "человек до самого ИТОГа; ошибки ученика копи молча — разбор только в ИТОГе.")
     if with_summary:                                 # C4: каталог калёк в ИТОГ-промпт
-        mistakes = db.top_mistakes(8)
+        mistakes = db.sample_mistakes(8)
         if mistakes:
             system += ("\n\nКАТАЛОГ КАЛЁК (при ИТОГе — проверь, не было ли таких в сессии; "
                        "найденные калёки добавь в errors[] с cause='калька с русского'):\n"

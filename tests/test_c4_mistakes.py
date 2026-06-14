@@ -1,4 +1,4 @@
-"""C4: top_mistakes — выборка калёк для ИТОГа."""
+"""C4: sample_mistakes — выборка калёк для ИТОГа."""
 import db
 
 
@@ -10,10 +10,10 @@ def _seed(conn, n=5):
         )
 
 
-def test_top_mistakes_returns_list(fresh_db):
+def test_sample_mistakes_returns_list(fresh_db):
     with db._conn() as c:
         _seed(c, 5)
-    result = db.top_mistakes(3)
+    result = db.sample_mistakes(3)
     assert isinstance(result, list)
     assert len(result) == 3
     assert "wrong" in result[0]
@@ -21,19 +21,19 @@ def test_top_mistakes_returns_list(fresh_db):
     assert "why" in result[0]
 
 
-def test_top_mistakes_empty_db(fresh_db):
-    assert db.top_mistakes(8) == []
+def test_sample_mistakes_empty_db(fresh_db):
+    assert db.sample_mistakes(8) == []
 
 
-def test_top_mistakes_respects_n(fresh_db):
+def test_sample_mistakes_respects_n(fresh_db):
     with db._conn() as c:
         _seed(c, 10)
-    assert len(db.top_mistakes(5)) == 5
-    assert len(db.top_mistakes(10)) == 10
+    assert len(db.sample_mistakes(5)) == 5
+    assert len(db.sample_mistakes(10)) == 10
 
 
-def test_top_mistakes_n_exceeds_table(fresh_db):
+def test_sample_mistakes_n_exceeds_table(fresh_db):
     with db._conn() as c:
         _seed(c, 3)
-    result = db.top_mistakes(10)
+    result = db.sample_mistakes(10)
     assert len(result) == 3  # не больше чем в таблице
