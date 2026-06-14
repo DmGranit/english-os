@@ -94,6 +94,42 @@ CREATE TABLE IF NOT EXISTS tech_errors (
 -- описания слоёв (reference): этимология корней и пояснения фреймов
 CREATE TABLE IF NOT EXISTS root_ref  (root TEXT PRIMARY KEY, idea TEXT, origin TEXT);
 CREATE TABLE IF NOT EXISTS frame_ref (name TEXT PRIMARY KEY, ru TEXT, when_use TEXT, example TEXT);
+-- C1: слои Excel 4–10, 12
+CREATE TABLE IF NOT EXISTS phrasal_ref (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phrasal TEXT NOT NULL, meaning TEXT, example TEXT, logic TEXT, category TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_phrasal_ref_phrasal ON phrasal_ref(phrasal);
+CREATE TABLE IF NOT EXISTS colloc_ref (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    core TEXT NOT NULL,        -- ядро (слово)
+    verbs TEXT,                -- типичные глаголы (JSON array)
+    adjs TEXT,                 -- типичные прилагательные (JSON array)
+    ru TEXT,                   -- русский аналог
+    anti TEXT                  -- «осторожно — не говорят» (C1.b)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_colloc_ref_core ON colloc_ref(core);
+CREATE TABLE IF NOT EXISTS scenario_ref (
+    scenario TEXT PRIMARY KEY,
+    opener TEXT, key_phrases TEXT, closer TEXT, context TEXT
+);
+CREATE TABLE IF NOT EXISTS grammar_ref (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT NOT NULL, when_use TEXT, formula TEXT, example TEXT, ru_mistake TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_grammar_ref_topic ON grammar_ref(topic);
+CREATE TABLE IF NOT EXISTS mistakes_ref (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT, wrong TEXT, right TEXT, why TEXT, context TEXT
+);
+CREATE TABLE IF NOT EXISTS bre_ame_ref (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT, bre TEXT, ame TEXT, ru TEXT
+);
+CREATE TABLE IF NOT EXISTS confuse_ref (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root TEXT, trap TEXT, group_a TEXT, group_b TEXT, how_to TEXT
+);
 -- снапшот словников can-do: фиксирует набор слов ДО контент-волн (Dm5)
 CREATE TABLE IF NOT EXISTS cando_words (
     cando_id TEXT NOT NULL,
@@ -240,19 +276,99 @@ def seed_from_json(path="english_os.json", reset=False):
     return count_content()
 
 def _seed_reference(c, data):
-    """Залить описания слоёв из reference: корни (этимология) и фреймы (пояснения)."""
+    """Залить описания слоёв из reference (идемпотентно: INSERT OR REPLACE/IGNORE)."""
     ref = data.get("reference", {})
+
+    # 1. Roots
     for r in ref.get("1. Roots", []):
         root = (r.get("Корень") or "").strip()
         if root:
             c.execute("INSERT OR REPLACE INTO root_ref (root, idea, origin) VALUES (?,?,?)",
                       (root, r.get("Идея"), r.get("Происхождение")))
+
+    # 4. Phrasal Verbs
+    for r in ref.get("4. Phrasal Verbs", []):
+        ph = (r.get("Фразовый") or "").strip()
+        if ph:
+            c.execute("""INSERT OR IGNORE INTO phrasal_ref (phrasal, meaning, example, logic, category)
+                         VALUES (?,?,?,?,?)""",
+                      (ph, r.get("Значение"), r.get("Пример"),
+                       r.get("Логика предлога"), r.get("Категория")))
+
+    # 5. Collocations
+    for r in ref.get("5. Collocations", []):
+        core = (r.get("Ядро (слово)") or "").strip()
+        if core:
+            verbs = json.dumps((r.get("Типичные глаголы") or "").split(", "), ensure_ascii=False)
+            adjs  = json.dumps((r.get("Типичные прилагательные") or "").split(", "), ensure_ascii=False)
+            c.execute("""INSERT OR IGNORE INTO colloc_ref (core, verbs, adjs, ru, anti)
+                         VALUES (?,?,?,?,?)""",
+                      (core, verbs, adjs, r.get("Русский аналог"),
+                       r.get("Осторожно — не говорят")))
+
+    # 6. Scenarios
+    for r in ref.get("6. Scenarios", []):
+        scn = (r.get("Сценарий") or "").strip()
+        if scn:
+            c.execute("""INSERT OR REPLACE INTO scenario_ref
+                         (scenario, opener, key_phrases, closer, context)
+                         VALUES (?,?,?,?,?)""",
+                      (scn, r.get("Открытие"), r.get("Ключевые фразы"),
+                       r.get("Закрытие"), r.get("Контекст")))
+
+    # 7. Thinking Frames
     for f in ref.get("7. Thinking Frames", []):
         name = (f.get("Шаблон") or "").strip()
         if name:
             c.execute("""INSERT OR REPLACE INTO frame_ref (name, ru, when_use, example)
                          VALUES (?,?,?,?)""",
                       (name, f.get("Перевод"), f.get("Когда использовать"), f.get("Пример в речи")))
+
+    # 8. Grammar
+    for r in ref.get("8. Grammar", []):
+        topic = (r.get("Тема") or "").strip()
+        if topic:
+            c.execute("""INSERT OR IGNORE INTO grammar_ref
+                         (topic, when_use, formula, example, ru_mistake)
+                         VALUES (?,?,?,?,?)""",
+                      (topic, r.get("Когда использовать"), r.get("Формула"),
+                       r.get("Пример"), r.get("Ошибка русскоговорящего")))
+
+    # 9. Mistakes (калька → правильно) — идемпотентность через очистку перед заливкой
+    if ref.get("9. Mistakes"):
+        c.execute("DELETE FROM mistakes_ref")
+        for r in ref["9. Mistakes"]:
+            wrong = (r.get("❌ Неправильно (калька)") or "").strip()
+            right = (r.get("✅ Правильно") or "").strip()
+            if wrong or right:
+                c.execute("""INSERT INTO mistakes_ref (category, wrong, right, why, context)
+                             VALUES (?,?,?,?,?)""",
+                          (r.get("Категория"), wrong, right,
+                           r.get("Почему"), r.get("Контекст / RU перевод")))
+
+    # 10. BrE vs AmE — идемпотентность через очистку перед заливкой
+    if ref.get("10. BrE vs AmE"):
+        c.execute("DELETE FROM bre_ame_ref")
+        for r in ref["10. BrE vs AmE"]:
+            bre = (r.get("🇬🇧 British") or "").strip()
+            ame = (r.get("🇺🇸 American") or "").strip()
+            if bre or ame:
+                c.execute("""INSERT INTO bre_ame_ref (category, bre, ame, ru)
+                             VALUES (?,?,?,?)""",
+                          (r.get("Категория"), bre, ame, r.get("Русский")))
+
+    # 12. Do Not Confuse
+    if ref.get("12. Do Not Confuse"):
+        c.execute("DELETE FROM confuse_ref")
+        for r in ref["12. Do Not Confuse"]:
+            root = (r.get("Корень") or "").strip()
+            if root:
+                c.execute("""INSERT INTO confuse_ref
+                             (root, trap, group_a, group_b, how_to)
+                             VALUES (?,?,?,?,?)""",
+                          (root, r.get("В чём ловушка"),
+                           r.get("Группа A (смысл 1)"), r.get("Группа B (смысл 2)"),
+                           r.get("Как различать")))
 
 def ensure_user_state(user_id=DEFAULT_USER):
     """Завести state='new' для всех слов контента, которых ещё нет у пользователя."""
