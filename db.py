@@ -788,6 +788,47 @@ def root_info(root):
         r = c.execute("SELECT root, idea, origin FROM root_ref WHERE root=?", (root,)).fetchone()
     return dict(r) if r else None
 
+def bre_ame_for_word(word):
+    """BrE/AmE запись для слова (None, если нет). C3.Δb."""
+    if not word:
+        return None
+    w = word.strip().lower()
+    with _conn() as c:
+        r = c.execute(
+            "SELECT bre, ame, ru FROM bre_ame_ref WHERE LOWER(TRIM(bre))=? OR LOWER(TRIM(ame))=?",
+            (w, w)
+        ).fetchone()
+    return dict(r) if r else None
+
+def confuse_for_word(word):
+    """Запись из confuse_ref, если слово входит в группу A или B (None, если нет). C3."""
+    if not word:
+        return None
+    w = word.strip().lower()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT trap, group_a, group_b, how_to FROM confuse_ref"
+        ).fetchall()
+    for r in rows:
+        ga = (r["group_a"] or "").lower()
+        gb = (r["group_b"] or "").lower()
+        if w in ga or w in gb:
+            return dict(r)
+    return None
+
+def phrasal_logic_for_word(word):
+    """Список (phrasal, logic) из phrasal_ref для данного слова-ядра. C3.Δa.
+    Ищет фразовые, начинающиеся с этого слова."""
+    if not word:
+        return []
+    prefix = word.strip().lower() + " "
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT phrasal, logic FROM phrasal_ref WHERE logic IS NOT NULL AND logic<>''",
+        ).fetchall()
+    return [(r["phrasal"], r["logic"]) for r in rows
+            if r["phrasal"].lower().startswith(prefix)][:3]
+
 def idea_info(idea):
     """Описание DNA-концепта из idea_ref: ru, description, thinking_pattern. None, если нет."""
     if not idea:
@@ -875,12 +916,23 @@ def mcq_options(word_id, k=4):
     return picked + [{"word_id": word_id, "word": w["word"], "ru": w["ru"]}]
 
 def deep_view(word_id):
-    """Глубокий разбор слова ИЗ ГРАФА (для кнопки «🔍 Глубже»): корень/семья/однокоренные/коллокации/фрейм.
-    Детерминированно, без ИИ — progressive disclosure по тапу."""
+    """Глубокий разбор слова ИЗ ГРАФА (для кнопки «🔍 Глубже»).
+    C3: += IPA, particle_logic (Δa), BrE/AmE (Δb), confuse-ловушка."""
     w = get_word(word_id)
     if not w:
         return ""
     lines = [f"🔍 {w['word']} — {w['ru']}"]
+
+    # IPA (C3)
+    if w.get("ipa_us") or w.get("ipa_uk"):
+        ipa = []
+        if w.get("ipa_us"):
+            ipa.append(f"🇺🇸 /{w['ipa_us']}/")
+        if w.get("ipa_uk") and w.get("ipa_uk") != w.get("ipa_us"):
+            ipa.append(f"🇬🇧 /{w['ipa_uk']}/")
+        lines.append("🔊 " + "  ".join(ipa))
+
+    # Корень + семья
     ri = root_info(w["root"])
     if ri:
         lines.append(f"🌳 корень {w['root']}: {ri['idea']} · {ri['origin']}")
@@ -890,11 +942,34 @@ def deep_view(word_id):
         sib = [x["word"] for x in words_by_root(w["root"]) if x["word"] != w["word"]]
         if sib:
             lines.append("🧩 однокоренные в базе: " + ", ".join(sib))
+
+    # Коллокации
     if w["collocations"]:
         lines.append("💬 коллокации: " + ", ".join(w["collocations"]))
+
+    # C3.Δa: логика предлога в фразовых глаголах
+    ph_logic = phrasal_logic_for_word(w["word"])
+    for ph, logic in ph_logic:
+        lines.append(f"↗️ {ph}: {logic}")
+
+    # Мыслительный фрейм
     if w["thinking_frame"]:
         fi = frame_info(w["thinking_frame"])
-        lines.append("🧠 фрейм: " + w["thinking_frame"] + (f" — {fi['ru']}" if fi and fi.get("ru") else ""))
+        lines.append("🧠 фрейм: " + w["thinking_frame"]
+                     + (f" — {fi['ru']}" if fi and fi.get("ru") else ""))
+
+    # C3.Δb: BrE / AmE
+    ba = bre_ame_for_word(w["word"])
+    if ba:
+        lines.append(f"🇬🇧/🇺🇸 {ba['bre']} / {ba['ame']} — {ba['ru']}")
+
+    # C3: не путай
+    cf = confuse_for_word(w["word"])
+    if cf:
+        lines.append(f"⚠️ не путай: {cf['trap']}")
+        if cf.get("how_to"):
+            lines.append(f"   → {cf['how_to']}")
+
     return "\n".join(lines)
 
 def branch_words(word_id, user_id=DEFAULT_USER, n=5):
