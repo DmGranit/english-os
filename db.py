@@ -886,7 +886,7 @@ def colloc_anti_matches(words, text):
         ).fetchall()
     hits = []
     for r in rows:
-        anti = (r["anti"] or "").strip().lower()
+        anti = (r["anti"] or "").replace("❌", "").strip().lower()
         if anti and anti in text_lower:
             hits.append((r["core"], r["anti"]))
     return hits

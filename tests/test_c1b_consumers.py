@@ -63,3 +63,14 @@ def test_anti_empty_inputs(fresh_db):
     assert db.colloc_anti_matches([], "some text") == []
     assert db.colloc_anti_matches([{"word": "deadline"}], "") == []
     assert db.colloc_anti_matches([{"word": "deadline"}], None) == []
+
+
+def test_anti_emoji_prefix_stripped(fresh_db):
+    """C1.b bug-fix: anti в БД хранится с префиксом ❌, в речи ученика его нет → должен матчить."""
+    with db._conn() as c:
+        c.execute("""INSERT OR IGNORE INTO colloc_ref (core, verbs, adjs, ru, anti)
+                     VALUES (?,?,?,?,?)""",
+                  ("decision", '["make"]', '[]', "решение", "❌ do a decision"))
+    words = [{"word": "decision"}]
+    hits = db.colloc_anti_matches(words, "i will do a decision")
+    assert hits == [("decision", "❌ do a decision")]
