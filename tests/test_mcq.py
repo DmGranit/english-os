@@ -37,9 +37,12 @@ def test_box1_is_mcq(fresh_db, monkeypatch):
     assert "invest" in text                            # вопрос — слово
     rows = kb.to_dict()["inline_keyboard"]
     cbs = [b["callback_data"] for row in rows for b in row]
-    assert all(c.startswith("mcq:") for c in cbs)
-    assert len(cbs) == 4
-    assert "mcq:1" in cbs                              # верный вариант среди кнопок
+    mcq_cbs  = [c for c in cbs if c.startswith("mcq:")]
+    flip_cbs = [c for c in cbs if c.startswith("flip:")]
+    assert len(mcq_cbs) == 4                           # 4 варианта
+    assert "mcq:1" in mcq_cbs                          # верный вариант среди кнопок
+    assert len(flip_cbs) == 1                          # B-enc2: кнопка «Скажу сам»
+    assert flip_cbs[0] == "flip:1"                     # flip:{wid} текущего слова
 
 
 def test_box2_still_cloze_not_mcq(fresh_db):

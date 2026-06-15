@@ -1287,7 +1287,8 @@ def _card_payload(ctx, uid, reveal=False):
             ctx.user_data["mcq_answer"] = wid
             kb = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(o["ru"], callback_data=f"mcq:{o['word_id']}")]
-                 for o in order])
+                 for o in order]
+                + [[InlineKeyboardButton("🔁 Скажу сам", callback_data=f"flip:{wid}")]])
             return (f"{label} · карточка {pos + 1}/{len(queue)}\n\n"
                     f"Что значит «{word['word']}»"
                     + (f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else "") + "?", kb)
@@ -1404,7 +1405,10 @@ async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     remembered = (action == "ok")
     ms = ctx.user_data.pop("card_ms", None)
     box = ctx.user_data.get("review_box", {}).get(word_id, 1)
-    ctype = "cloze" if (box == 2 and not productive_box(box)) else "self"
+    if ctx.user_data.pop("flip_wid", None):        # B-enc2: самооценка после flip
+        ctype = "flip"
+    else:
+        ctype = "cloze" if (box == 2 and not productive_box(box)) else "self"
     await _record_review(ctx, uid, word_id, remembered, ms, card_type=ctype)
     await _next_card(q, ctx, uid)
 
@@ -1470,6 +1474,34 @@ async def on_mcq(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(head + ex + block)
     shim = types.SimpleNamespace(edit_message_text=q.message.reply_text, message=q.message)
     await _next_card(shim, ctx, uid)
+
+async def on_flip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """B-enc2: «🔁 Скажу сам» на MCQ-карточке (box 1).
+    Деактивирует MCQ и показывает слово для самооценки (card_type='flip')."""
+    q = update.callback_query
+    await q.answer()
+    uid = _learner(update)
+    wid = int(q.data.split(":")[1])
+    word = db.get_word(wid)
+    if not word:
+        await q.answer("Слово не найдено", show_alert=True)
+        return
+    # stale-tap guard: flip должен соответствовать текущей карточке очереди
+    queue = ctx.user_data.get("review_queue", [])
+    pos   = ctx.user_data.get("review_pos", 0)
+    if not queue or pos >= len(queue) or queue[pos] != wid:
+        await q.answer("Карточка устарела — нажми ☀️ Повторить", show_alert=True)
+        return
+    ctx.user_data.pop("mcq_answer", None)           # MCQ деактивирован — двойного учёта нет
+    ctx.user_data["flip_wid"] = wid                 # маркер: on_review запишет card_type='flip'
+    label = _deck_label(ctx)
+    ipa   = f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else ""
+    ex    = f"\n{word['example']}" if word.get("example") else ""
+    block = ("\n" + _network_block(word)) if _variant(uid, wid) == "layered" else ""
+    await q.edit_message_text(
+        f"{label} · карточка {pos + 1}/{len(queue)}\n\n"
+        f"«{word['word']}»{ipa} — {word['ru']}{ex}{block}\n\nТы вспомнил?",
+        reply_markup=_review_kb(reveal=True))
 
 async def on_assembly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Конструктор SVOMPT (box 4): тапы по словам, результат — объективный (по ошибкам)."""
@@ -2322,6 +2354,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_assembly, pattern=r"^asm:"))
     app.add_handler(CallbackQueryHandler(on_warm, pattern=r"^warm:"))   # превью продукции
     app.add_handler(CallbackQueryHandler(on_mcq, pattern=r"^mcq:"))
+    app.add_handler(CallbackQueryHandler(on_flip, pattern=r"^flip:"))
     app.add_handler(CallbackQueryHandler(on_activation, pattern=r"^act:"))
     app.add_handler(CallbackQueryHandler(on_rate, pattern=r"^rate:"))
     app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
