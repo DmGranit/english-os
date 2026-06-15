@@ -1221,8 +1221,10 @@ def _asm_kb(order, used):
             for i, t in enumerate(order) if i not in used]
     return InlineKeyboardMarkup([btns[i:i + 3] for i in range(0, len(btns), 3)])
 
-def _deck_label(ctx):
-    """Заголовок режима для карточки: урок vs повторение."""
+def _deck_label(ctx, wid=None):
+    """Заголовок режима для карточки: доработка / урок / повторение."""
+    if wid and wid in ctx.user_data.get("rework_ids", set()):
+        return "🔄 Доработка"
     return "🌅 Урок" if ctx.user_data.get("mode") == "lesson" else "🔁 Повторение"
 
 def _asm_question(word, pos, total, picked, label="🔁 Повторение"):
@@ -1277,7 +1279,7 @@ def _card_payload(ctx, uid, reveal=False):
     word = db.get_word(wid)
     box = ctx.user_data.get("review_box", {}).get(wid, 1)
     productive = box >= db.PRODUCTIVE_FROM_BOX  # зрелое слово -> RU→EN; иначе EN→RU
-    label = _deck_label(ctx)
+    label = _deck_label(ctx, wid=wid)
     ctx.user_data["review_reveal"] = reveal
     ctx.user_data.pop("typed_wid", None)        # карточка сменилась — ожидание ввода снято
     if not reveal and box == 1:                 # box 1: выбор из 4 (объективно, без печати русского)
@@ -1323,6 +1325,8 @@ async def _finish_review(q, ctx, uid):
     ok   = ctx.user_data.get("review_ok", 0)
     fail = ctx.user_data.get("review_fail", 0)
     db.backup()
+    ctx.user_data.pop("rework_queue", None)     # B-enc3: подчистить хвосты
+    ctx.user_data.pop("rework_ids", None)
     more = ctx.user_data.pop("deck_more", 0)
     tail = (f"\n\n📚 Ещё {more} слов(а) ждут — но это на потом, без спешки. "
             f"Лучше короткими подходами!") if more else ""
@@ -1416,13 +1420,22 @@ def productive_box(box):
     return box >= db.PRODUCTIVE_FROM_BOX
 
 async def _record_review(ctx, uid, word_id, remembered, ms, card_type="self"):
-    """Записать результат карточки (SRS + A/B + полоса + счётчики сессии)."""
+    """Записать результат карточки (SRS + A/B + полоса + счётчики сессии).
+    B-enc3: rework-карточки (word_id in rework_ids) — показ без SRS-записи,
+    summary-счётчики тоже не трогаем (R24: «Слов» = число первого прохода)."""
     ctx.user_data.pop("typed_wid", None)        # «Не помню» и любой исход снимают ожидание
+    if word_id in ctx.user_data.get("rework_ids", set()):
+        ctx.user_data["rework_ids"].discard(word_id)
+        return                                  # db.review не вызывается, box не двигается
     db.review(word_id, remembered, uid, variant=_variant(uid, word_id), ms=ms,
               card_type=card_type)
     db.adapt_band(uid)                          # тихо подстраиваем полосу
     key = "review_ok" if remembered else "review_fail"
     ctx.user_data[key] = ctx.user_data.get(key, 0) + 1
+    if not remembered:                          # B-enc3: провал → доработка в конце колоды
+        rq = ctx.user_data.setdefault("rework_queue", [])
+        if word_id not in rq:
+            rq.append(word_id)
 
 async def _finish_lesson(q, ctx, uid):
     """Урок завершён: записать след → закрывает слот NEW в карте дня (B-enc1)."""
@@ -1431,7 +1444,8 @@ async def _finish_lesson(q, ctx, uid):
     db.log_session(uid, "new")
     db.backup()
     for k in ("review_queue", "review_pos", "review_ok", "review_fail",
-              "review_box", "review_reveal", "deck_more"):
+              "review_box", "review_reveal", "deck_more",
+              "rework_queue", "rework_ids"):     # B-enc3: подчистить rework-состояние
         ctx.user_data.pop(k, None)
     ctx.user_data["mode"] = "flow"
     await q.edit_message_text(
@@ -1442,10 +1456,15 @@ async def _finish_lesson(q, ctx, uid):
     await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
 
 async def _next_card(q, ctx, uid):
-    """Сдвинуть колоду: следующая карточка или финал (урок/повторение)."""
+    """Сдвинуть колоду: следующая карточка, rework-проход или финал."""
     ctx.user_data["review_pos"] = ctx.user_data.get("review_pos", 0) + 1
     if ctx.user_data["review_pos"] >= len(ctx.user_data.get("review_queue", [])):
-        if ctx.user_data.get("mode") == "lesson":
+        rework = ctx.user_data.pop("rework_queue", [])
+        if rework:                              # B-enc3: влить доработку в конец колоды
+            ctx.user_data["review_queue"].extend(rework)
+            ctx.user_data["rework_ids"] = set(rework)   # пометить — SRS не пишется
+            await _show_card(q, ctx, uid, reveal=False)
+        elif ctx.user_data.get("mode") == "lesson":
             await _finish_lesson(q, ctx, uid)
         else:
             await _finish_review(q, ctx, uid)
@@ -1494,7 +1513,7 @@ async def on_flip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     ctx.user_data.pop("mcq_answer", None)           # MCQ деактивирован — двойного учёта нет
     ctx.user_data["flip_wid"] = wid                 # маркер: on_review запишет card_type='flip'
-    label = _deck_label(ctx)
+    label = _deck_label(ctx, wid=wid)
     ipa   = f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else ""
     ex    = f"\n{word['example']}" if word.get("example") else ""
     block = ("\n" + _network_block(word)) if _variant(uid, wid) == "layered" else ""
