@@ -833,6 +833,19 @@ def confuse_for_word(word):
             return dict(r)
     return None
 
+def grammar_for_word(word):
+    """Тема из grammar_ref, если слово встречается в formula/example целым словом (G0)."""
+    if not word:
+        return None
+    pat = re.compile(rf'\b{re.escape(word.strip().lower())}\b')
+    with _conn() as c:
+        rows = c.execute("SELECT topic, formula, example, ru_mistake FROM grammar_ref").fetchall()
+    for r in rows:
+        text = f"{r['formula'] or ''} {r['example'] or ''}".lower()
+        if pat.search(text):
+            return dict(r)
+    return None
+
 def phrasal_logic_for_word(word):
     """Список (phrasal, logic) из phrasal_ref для данного слова-ядра. C3.Δa.
     Ищет фразовые, начинающиеся с этого слова."""
@@ -986,6 +999,13 @@ def deep_view(word_id):
         lines.append(f"⚠️ не путай: {cf['trap']}")
         if cf.get("how_to"):
             lines.append(f"   → {cf['how_to']}")
+
+    # G0: grammar_ref
+    gr = grammar_for_word(w["word"])
+    if gr:
+        lines.append(f"📐 грамматика: {gr['topic']} — {gr['formula']}")
+        if gr.get("ru_mistake"):
+            lines.append(f"   ❗{gr['ru_mistake']}")
 
     return "\n".join(lines)
 
