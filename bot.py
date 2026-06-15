@@ -15,6 +15,9 @@ English OS — каркас телеграм-бота.
 Что осознанно оставлено как TODO (помечено ниже):
     - парсинг свободного ввода «Учим X, Y» в режим+слова (или только кнопки)
 """
+from dotenv import load_dotenv
+load_dotenv()
+
 import html as _htmlmod
 import os, json, random, re, shutil, time, asyncio, datetime, logging, types, urllib.parse, zlib
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
