@@ -1295,6 +1295,19 @@ def fresh_today(user_id=DEFAULT_USER, limit=1):
                          (user_id, _today(), limit)).fetchall()
     return [_row_to_word(r) for r in rows]
 
+def recognized_today(user_id=DEFAULT_USER, limit=1):
+    """Слова, введённые СЕГОДНЯ и УЗНАННЫЕ сегодня (продвинуты в box>=2) — кандидаты на
+    превью продукции в конце урока NEW (P1, план v2.6). В отличие от `fresh_today` (box1 =
+    то, что ученик провалил) — берём то, что он узнал: предлагать «скажи сам» по
+    проваленному слову било бы по доверию. Вне SRS, как и `fresh_today`."""
+    with _conn() as c:
+        rows = c.execute("""SELECT c.* FROM state s JOIN content c USING(word_id)
+                            WHERE s.user_id=? AND s.promoted_at=? AND s.box>=2
+                              AND s.status IN ('learning','known')
+                            ORDER BY c.priority DESC LIMIT ?""",
+                         (user_id, _today(), limit)).fetchall()
+    return [_row_to_word(r) for r in rows]
+
 def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None, card_type=None):
     """Обновить SRS после повторения. remembered: True/False.
     variant ('layered'/'flat'), ms (время ответа), card_type (mcq/cloze/typed/assembly/self)

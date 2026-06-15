@@ -1453,6 +1453,12 @@ async def _finish_lesson(q, ctx, uid):
         f"Слов: {ok + fail}\n✅ Узнал: {ok}\n❌ Не вспомнил: {fail}\n\n"
         "Слова теперь в очереди — вернутся завтра на повторение 📅"
     )
+    fresh = db.recognized_today(uid, limit=1)  # P1: продукция в день 1 по УЗНАННОМУ слову (вне SRS)
+    if fresh:
+        await q.message.reply_text(
+            "⚡ Бонус: одно из сегодняшних слов — попробуешь сказать сам? "
+            "Это превью продукции, в статистику не идёт.",
+            reply_markup=_warm_kb(fresh[0]["word_id"]))
     await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
 
 async def _next_card(q, ctx, uid):
