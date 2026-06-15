@@ -1290,7 +1290,7 @@ def _card_payload(ctx, uid, reveal=False):
             kb = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(o["ru"], callback_data=f"mcq:{o['word_id']}")]
                  for o in order]
-                + [[InlineKeyboardButton("🔁 Скажу сам", callback_data=f"flip:{wid}")]])
+                + [[InlineKeyboardButton("💡 Подсказка", callback_data=f"flip:{wid}")]])
             return (f"{label} · карточка {pos + 1}/{len(queue)}\n\n"
                     f"Что значит «{word['word']}»"
                     + (f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else "") + "?", kb)
@@ -1501,7 +1501,7 @@ async def on_mcq(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _next_card(shim, ctx, uid)
 
 async def on_flip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """B-enc2: «🔁 Скажу сам» на MCQ-карточке (box 1).
+    """B-enc2: «💡 Подсказка» на MCQ-карточке (box 1).
     Деактивирует MCQ и показывает слово для самооценки (card_type='flip')."""
     q = update.callback_query
     await q.answer()
