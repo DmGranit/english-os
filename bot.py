@@ -1121,6 +1121,23 @@ def _variant(user_id, word_id):
     У каждого пользователя своя раскладка слов по layered/flat."""
     return "layered" if zlib.crc32(f"{user_id}:{word_id}".encode()) & 1 == 0 else "flat"
 
+P2_PRIMARY_PCT = 70   # доля «основного» (объективного) формата; остальное — recall-вариант
+
+def _card_format(wid, box, opts_n=0, has_cloze=False, date=None):
+    """P2: формат карточки в коробке (анти-«одна кнопка»). Детерминирован по hash(wid+date+box)
+    — стабилен в течение дня, меняется день-к-дню (сид без user_id: один основной ученик, R42).
+    Варьируются ТОЛЬКО box1/box2 (вариант А, R42); box3/4/5 → None = жёсткий тип коробки не трогаем.
+    Фолбэк: нет данных (mcq <2 опций / нет коллокации) → 'self' (recall), не пустой формат."""
+    if box not in (1, 2):
+        return None                                   # продуктивная лестница sacred
+    if box == 1 and opts_n < 2:
+        return "self"
+    if box == 2 and not has_cloze:
+        return "self"
+    d = date or datetime.date.today().isoformat()
+    primary = "mcq" if box == 1 else "cloze"
+    return primary if zlib.crc32(f"{wid}:{d}:{box}".encode()) % 100 < P2_PRIMARY_PCT else "self"
+
 def _network_block(word):
     """Блок «сети» для layered-карточки: связи слова (проверенные данные из базы)."""
     lines = []
@@ -1191,7 +1208,8 @@ async def _handle_typed_answer(update, ctx, uid, text):
     ok = exact or near
     shown = ctx.user_data.get("card_shown_at")
     ms = int((time.time() - shown) * 1000) if shown else None
-    await _record_review(ctx, uid, wid, ok, ms, card_type="typed")
+    await _record_review(ctx, uid, wid, ok, ms,
+                         card_type=ctx.user_data.pop("card_format", "typed"))
     if exact:
         head = f"✅ Точно! {word['word']} — {word['ru']}"
     elif near:
@@ -1247,14 +1265,15 @@ def _cloze_for(word):
     return None
 
 def _review_card_text(word, pos, total, reveal, productive, variant="layered", box=1,
-                      label="🔁 Повторение"):
+                      label="🔁 Повторение", force_recall=False):
     """Карточка. Лестница трудности: box 1 — узнавание (EN→RU), box 2 — cloze
     (чанк с пропуском: тренируем коллокацию как единицу), box 3+ — продукция (RU→EN).
-    Вариант: layered показывает «сеть» при раскрытии ответа, flat — только ответ (A/B)."""
+    Вариант: layered показывает «сеть» при раскрытии ответа, flat — только ответ (A/B).
+    force_recall (P2): подавить cloze на box2 → recall-узнавание (вариативность в коробке)."""
     head = f"{label} · карточка {pos}/{total}"
     ipa = f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else ""
     ex  = f"\nПример: {word['example']}" if word.get("example") else ""
-    cloze = _cloze_for(word) if (not productive and box == 2) else None
+    cloze = None if force_recall else (_cloze_for(word) if (not productive and box == 2) else None)
     hint = "Нажми «Показать ответ» — или просто напиши свой вариант сообщением."
     if productive:                                   # RU -> EN
         if not reveal:
@@ -1285,11 +1304,12 @@ def _card_payload(ctx, uid, reveal=False):
     label = _deck_label(ctx, wid=wid)
     ctx.user_data["review_reveal"] = reveal
     ctx.user_data.pop("typed_wid", None)        # карточка сменилась — ожидание ввода снято
-    if not reveal and box == 1:                 # box 1: выбор из 4 (объективно, без печати русского)
+    if not reveal and box == 1:                 # box 1: MCQ ИЛИ recall (P2 — вариативность в коробке)
         opts = db.mcq_options(wid, k=4)
-        if len(opts) >= 2:
+        if len(opts) >= 2 and _card_format(wid, box, opts_n=len(opts)) == "mcq":
             order = random.sample(opts, len(opts))
             ctx.user_data["mcq_answer"] = wid
+            ctx.user_data["card_format"] = "mcq"
             kb = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(o["ru"], callback_data=f"mcq:{o['word_id']}")]
                  for o in order]
@@ -1297,6 +1317,7 @@ def _card_payload(ctx, uid, reveal=False):
             return (f"{label} · карточка {pos + 1}/{len(queue)}\n\n"
                     f"Что значит «{word['word']}»"
                     + (f"  🔊 {word['ipa_uk']}" if word.get("ipa_uk") else "") + "?", kb)
+        ctx.user_data["card_format"] = "self"   # P2: recall-вариант box1 → _review_card_text ниже
     if not reveal and box == 3:                 # box 3: продукция вводом текста (объективно)
         ctx.user_data["typed_wid"] = wid
         return ((f"{label} · карточка {pos + 1}/{len(queue)}\n\n"
@@ -1312,8 +1333,14 @@ def _card_payload(ctx, uid, reveal=False):
                                  asm_picked=[], asm_errors=0, asm_wid=wid)
             return (_asm_question(word, pos + 1, len(queue), [], label=label),
                     _asm_kb(order, []))
+    force_recall = False
+    if box == 2 and not productive:             # box 2: cloze ИЛИ recall (P2 — вариативность в коробке)
+        cloze = _cloze_for(word)
+        force_recall = _card_format(wid, box, has_cloze=bool(cloze)) == "self"
+        if not reveal:
+            ctx.user_data["card_format"] = "self" if force_recall else "cloze"
     return (_review_card_text(word, pos + 1, len(queue), reveal, productive,
-                              _variant(uid, wid), box=box, label=label),
+                              _variant(uid, wid), box=box, label=label, force_recall=force_recall),
             _review_kb(reveal))
 
 async def _show_card(q, ctx, uid, reveal=False):
@@ -1412,10 +1439,11 @@ async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     remembered = (action == "ok")
     ms = ctx.user_data.pop("card_ms", None)
     box = ctx.user_data.get("review_box", {}).get(word_id, 1)
+    fmt = ctx.user_data.pop("card_format", None)   # P2: факт показанного формата (не вывод из box)
     if ctx.user_data.pop("flip_wid", None):        # B-enc2: самооценка после flip
         ctype = "flip"
-    else:
-        ctype = "cloze" if (box == 2 and not productive_box(box)) else "self"
+    else:                                          # P2-формат → иначе backward-compat вывод из box
+        ctype = fmt or ("cloze" if (box == 2 and not productive_box(box)) else "self")
     await _record_review(ctx, uid, word_id, remembered, ms, card_type=ctype)
     await _next_card(q, ctx, uid)
 
@@ -1494,7 +1522,8 @@ async def on_mcq(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ok = picked == target
     shown = ctx.user_data.get("card_shown_at")
     ms = int((time.time() - shown) * 1000) if shown else None
-    await _record_review(ctx, uid, target, ok, ms, card_type="mcq")
+    await _record_review(ctx, uid, target, ok, ms,
+                         card_type=ctx.user_data.pop("card_format", "mcq"))
     head = (f"✅ Верно! {word['word']} — {word['ru']}" if ok
             else f"❌ «{word['word']}» — {word['ru']}, а не «{db.get_word(picked)['ru']}»")
     ex = f"\n{word['example']}" if word.get("example") else ""
@@ -1567,7 +1596,8 @@ async def on_assembly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ok = errs <= 1
     shown = ud.get("card_shown_at")
     ms = int((time.time() - shown) * 1000) if shown else None
-    await _record_review(ctx, uid, ud["asm_wid"], ok, ms, card_type="assembly")
+    await _record_review(ctx, uid, ud["asm_wid"], ok, ms,
+                         card_type=ud.pop("card_format", "assembly"))
     verdict = ("✅ Собрано без ошибок!" if errs == 0
                else "✅ Собрано! (один промах — прощён)" if ok
                else f"⚠️ Собрано, но ошибок: {errs}")
