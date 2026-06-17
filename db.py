@@ -1880,6 +1880,54 @@ def cando_progress(user_id=DEFAULT_USER, ready_ratio=0.6):
                         "ready": total > 0 and pct >= ready_ratio and mastered >= 2})
     return out
 
+# ---------- RT: Маршрут (программа-как-ценность поверх can-do) ----------
+# Недели курса = фокус + can-do-веха (привязка к CANDO) + grammar-тема (привязка к GR2).
+# Маршрут ПОДСВЕЧИВАЕТ след. шаг, ничего не блокирует. Веха закрывается, когда сценарий
+# «показан» (cando ready) И хотя бы одно слово пережило 90 дней (box5 / maintenance).
+ROUTE = [
+    {"week": 1, "focus": "знакомство и small talk",  "cando": "smalltalk", "grammar": "Present Continuous", "ru": "могу поддержать small talk"},
+    {"week": 2, "focus": "просьбы и уточнения",        "cando": "help",      "grammar": "Future Simple",      "ru": "могу попросить о помощи"},
+    {"week": 3, "focus": "прошедшее время — рассказ",  "cando": "status",    "grammar": "Past Simple",        "ru": "могу рассказать про вчера"},
+    {"week": 4, "focus": "деловое письмо",             "cando": "email_req", "grammar": "Present Perfect",     "ru": "могу написать письмо-просьбу"},
+    {"week": 5, "focus": "нетворкинг",                 "cando": "network",   "grammar": "Past Continuous",    "ru": "могу завязать контакт"},
+    {"week": 6, "focus": "собеседование",              "cando": "interview", "grammar": "Past Simple",        "ru": "могу пройти собеседование"},
+    {"week": 7, "focus": "переговоры",                 "cando": "negotiate", "grammar": "Present Perfect",     "ru": "могу договориться об условиях"},
+    {"week": 8, "focus": "питч идеи",                  "cando": "pitch",     "grammar": "Future Simple",      "ru": "могу презентовать идею"},
+]
+
+def route_milestone_closed(user_id, entry):
+    """Веха недели закрыта: сценарий «показан» (cando ready) И пережил maintenance
+    (хотя бы одно слово сценария дошло до box5 — survival ≈ 90 дней)."""
+    cp = {r["id"]: r for r in cando_progress(user_id)}
+    r = cp.get(entry["cando"])
+    if not r or not r.get("ready"):
+        return False
+    with _conn() as c:
+        survived = c.execute(
+            """SELECT COUNT(*) FROM content cc JOIN state s USING(word_id)
+               WHERE s.user_id=? AND cc.scenario=? AND s.box>=5""",
+            (user_id, r["scenario"])).fetchone()[0]
+    return survived >= 1
+
+def route_progress(user_id=DEFAULT_USER):
+    """Прогресс-дуга маршрута: текущая неделя = первая НЕзакрытая веха.
+    Возвращает week/total/focus/milestone_ru/grammar/pct/closed/done."""
+    cp = {r["id"]: r for r in cando_progress(user_id)}
+    closed = 0
+    cur = None
+    for entry in ROUTE:
+        if route_milestone_closed(user_id, entry):
+            closed += 1
+        elif cur is None:
+            cur = entry
+    done = cur is None
+    entry = cur or ROUTE[-1]
+    r = cp.get(entry["cando"]) or {}
+    return {"week": entry["week"], "total": len(ROUTE),
+            "focus": entry["focus"], "milestone_ru": entry["ru"],
+            "grammar": entry.get("grammar"), "pct": r.get("pct", 0.0),
+            "closed": closed, "done": done}
+
 # ---------- профиль ученика («память» тьютора, строго из данных) ----------
 
 _CAT_RU = {"word_order": "порядок слов", "article": "артикли", "preposition": "предлоги",

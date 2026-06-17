@@ -462,17 +462,29 @@ async def on_pace(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Любая кнопка работает всегда — программа лишь подсказывает порядок. Сменить: /program.",
         reply_markup=_program_kb())
 
-# ---------- программа занятий: free | cycle ----------
+# ---------- программа занятий: free | cycle | route ----------
 def _program_kb():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧭 Маршрут: курс по неделям", callback_data="prog:route")],
         [InlineKeyboardButton("🗓 Программа дня: утро–день–вечер", callback_data="prog:cycle")],
         [InlineKeyboardButton("🆓 Свободный режим", callback_data="prog:free")],
     ])
 
+def _route_line(rp):
+    """RT: строка прогресс-дуги маршрута. Подсвечивает шаг, ничего не блокирует."""
+    if rp["done"]:
+        return f"🏁 Маршрут пройден! Все {rp['total']} вех закрыты 🎉"
+    pct = round(rp["pct"] * 100)
+    line = (f"🧭 Маршрут · Неделя {rp['week']}/{rp['total']} · фокус: {rp['focus']}\n"
+            f"🎯 веха: {rp['milestone_ru']} — {pct}%")
+    if rp.get("grammar"):
+        line += f"\n📐 грамматика недели: {rp['grammar']} → /grammar"
+    return line
+
 async def program_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/program — выбрать режим занятий в любой момент."""
     cur = db.get_program(_learner(update))
-    label = "🗓 программа дня" if cur == "cycle" else "🆓 свободный"
+    label = {"cycle": "🗓 программа дня", "route": "🧭 маршрут"}.get(cur, "🆓 свободный")
     await update.message.reply_text(
         f"Сейчас: {label}. Как заниматься дальше?", reply_markup=_program_kb())
 
@@ -494,6 +506,12 @@ async def on_program(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Сейчас стоят {_fmt_time(t['morning'])} / {_fmt_time(t['day'])} / {_fmt_time(t['evening'])}.\n\n"
             "📅 А ещё можешь поставить ежедневное напоминание в свой календарь — кнопка ниже.",
             reply_markup=_cal_kb())
+    elif prog == "route":
+        rp = db.route_progress(uid)
+        await q.edit_message_text(
+            "🧭 Маршрут включён — курс по неделям.\n\n" + _route_line(rp) +
+            "\n\nМаршрут лишь ПОДСКАЗЫВАЕТ следующий шаг: любая кнопка работает всегда, "
+            "ничего не блокируется. Полный прогресс — в 📈 Прогресс. Сменить режим — /program.")
     else:
         await q.edit_message_text(
             "🆓 Свободный режим: занимайся, как удобно. Вернуть программу — /program.")
@@ -2044,7 +2062,10 @@ async def progress_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/progress — прогресс по деловым can-do (CEFR-стиль). Прокси по словарю, не сертификат."""
     uid = _learner(update)
     rows = db.cando_progress(uid)
-    lines = ["📈 Что ты уже можешь (по освоенным словам сценария):\n"]
+    lines = []
+    if db.get_program(uid) == "route":            # RT: дуга маршрута поверх can-do
+        lines.append(_route_line(db.route_progress(uid)) + "\n")
+    lines.append("📈 Что ты уже можешь (по освоенным словам сценария):\n")
     for r in rows:
         mark = "✅" if r["ready"] else ("▶" if r["mastered"] else "·")
         lines.append(f"{mark} [{r['level']}] {r['ru']} — {r['mastered']}/{r['total']}")
