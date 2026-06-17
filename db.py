@@ -125,6 +125,14 @@ CREATE TABLE IF NOT EXISTS grammar_ref (
     topic TEXT NOT NULL, when_use TEXT, formula TEXT, example TEXT, ru_mistake TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_grammar_ref_topic ON grammar_ref(topic);
+CREATE TABLE IF NOT EXISTS grammar_state (
+    user_id INTEGER NOT NULL,
+    topic   TEXT NOT NULL,
+    box     INTEGER NOT NULL DEFAULT 2,    -- GR2: тема зреет по Лейтнеру, пол box=2 (transform-готова)
+    status  TEXT,
+    last_review TEXT, next_review TEXT,
+    PRIMARY KEY (user_id, topic)
+);
 CREATE TABLE IF NOT EXISTS mistakes_ref (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category TEXT, wrong TEXT, right TEXT, why TEXT, context TEXT
@@ -290,6 +298,21 @@ _IRREGULAR_SEED = [
     ("put",     "put",     "put",     "класть",         "putted",    "0-change"),
     ("let",     "let",     "let",     "позволять",      "letted",    "0-change"),
     ("cut",     "cut",     "cut",     "резать",         "cutted",    "0-change"),
+]
+
+# GR2: трансформации времён. (topic, label, source [Present Simple], answer [целевое время])
+# topic совпадает с именами grammar_ref — чтобы grammar_ru_mistake давал подсказку по теме.
+_TRANSFORM_SEED = [
+    ("Past Simple",       "Поставь в Past Simple (прошедшее)",        "I go to work every day",  "I went to work every day"),
+    ("Past Simple",       "Поставь в Past Simple (прошедшее)",        "She writes emails",       "She wrote emails"),
+    ("Past Simple",       "Поставь в Past Simple (прошедшее)",        "They build houses",       "They built houses"),
+    ("Present Perfect",   "Поставь в Present Perfect (уже сделал)",    "I finish the report",     "I have finished the report"),
+    ("Present Perfect",   "Поставь в Present Perfect (уже сделал)",    "She reads the book",      "She has read the book"),
+    ("Future Simple",     "Поставь в Future Simple (будущее, will)",   "We play football",        "We will play football"),
+    ("Future Simple",     "Поставь в Future Simple (будущее, will)",   "He calls you",            "He will call you"),
+    ("Present Continuous","Поставь в Present Continuous (прямо сейчас)","I read a book",           "I am reading a book"),
+    ("Present Continuous","Поставь в Present Continuous (прямо сейчас)","They work hard",          "They are working hard"),
+    ("Past Continuous",   "Поставь в Past Continuous (длилось тогда)", "I cook dinner",           "I was cooking dinner"),
 ]
 
 def init_db():
@@ -931,6 +954,81 @@ def grammar_for_word(word):
         if pat.search(text):
             return dict(r)
     return None
+
+# ---------- GR2: времена через трансформацию (grammar_state, SRS) ----------
+
+def transform_topics():
+    """GR2: список грамм-тем, для которых есть transform-карточки (порядок сохранён)."""
+    seen = []
+    for item in _TRANSFORM_SEED:
+        if item[0] not in seen:
+            seen.append(item[0])
+    return seen
+
+def ensure_grammar_state(user_id=DEFAULT_USER):
+    """GR2: завести темы в grammar_state transform-готовыми (box=2), идемпотентно."""
+    today = _today()
+    with _conn() as c:
+        for topic in transform_topics():
+            c.execute("""INSERT OR IGNORE INTO grammar_state
+                         (user_id, topic, box, status, next_review)
+                         VALUES (?,?,?,?,?)""",
+                      (user_id, topic, 2, "learning", today))
+
+def grammar_due(user_id=DEFAULT_USER):
+    """GR2: темы, созревшие к transform-повторению (box≥2, next_review<=сегодня)."""
+    today = _today()
+    with _conn() as c:
+        rows = c.execute("""SELECT topic FROM grammar_state
+                            WHERE user_id=? AND box>=2
+                              AND next_review IS NOT NULL AND next_review<=?""",
+                         (user_id, today)).fetchall()
+    return [r["topic"] for r in rows]
+
+def grammar_ru_mistake(topic):
+    """GR2: типичная калька RU по теме из grammar_ref (подсказка при провале), или None."""
+    if not topic:
+        return None
+    with _conn() as c:
+        r = c.execute("SELECT ru_mistake FROM grammar_ref WHERE topic=?", (topic,)).fetchone()
+    return r["ru_mistake"] if r and r["ru_mistake"] else None
+
+def transform_card(user_id=DEFAULT_USER):
+    """GR2: transform-карточка для созревшей темы (box≥2), или None если ничего не due.
+    Возвращает dict(topic, label, source, answer, ru_mistake)."""
+    ensure_grammar_state(user_id)
+    due = grammar_due(user_id)
+    if not due:
+        return None
+    topic = random.choice(due)
+    _, label, source, answer = random.choice([it for it in _TRANSFORM_SEED if it[0] == topic])
+    return {"topic": topic, "label": label, "source": source,
+            "answer": answer, "ru_mistake": grammar_ru_mistake(topic)}
+
+def grammar_review(user_id, topic, remembered):
+    """GR2: продвинуть тему по той же Лейтнер-логике (INTERVALS), но с полом box=2 —
+    у грамматики нет box-1 transform-карточки, провал не выкидывает тему из оборота.
+    Зреет в grammar_state; словарную reviews НЕ трогает."""
+    today = _today()
+    with _conn() as c:
+        r = c.execute("SELECT box FROM grammar_state WHERE user_id=? AND topic=?",
+                      (user_id, topic)).fetchone()
+        box = (r["box"] if r else 2) or 2
+        if remembered:
+            box = min(box + 1, 5)
+            status = "known" if box == 5 else "learning"
+        else:
+            box = max(2, box - 1)
+            status = "forgot"
+        nxt = (datetime.date.today() + datetime.timedelta(days=INTERVALS[box])).isoformat()
+        c.execute("""INSERT INTO grammar_state
+                       (user_id, topic, box, status, last_review, next_review)
+                     VALUES (?,?,?,?,?,?)
+                     ON CONFLICT(user_id, topic) DO UPDATE SET
+                       box=excluded.box, status=excluded.status,
+                       last_review=excluded.last_review, next_review=excluded.next_review""",
+                  (user_id, topic, box, status, today, nxt))
+    return {"topic": topic, "box": box, "status": status, "next_review": nxt}
 
 def phrasal_logic_for_word(word):
     """Список (phrasal, logic) из phrasal_ref для данного слова-ядра. C3.Δa.

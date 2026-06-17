@@ -536,7 +536,7 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• замолчишь на 25 минут — сам подведу итог сессии;\n"
         "• кнопки прячутся после нажатия — вернуть их можно значком ⌨ в строке ввода.\n\n"
         "Команды: /topics темы · /mistakes мои ошибки · /calque найди кальку · "
-        "/irregular неправильные глаголы · /pace темп · "
+        "/irregular неправильные глаголы · /grammar времена · /pace темп · "
         "/program программа дня · /remind напоминания · /add слова в очередь",
         reply_markup=MAIN_KB)
 
@@ -620,6 +620,7 @@ async def _send_irregular(msg, ctx):
         ctx.user_data.pop("gr1", None)
         await msg.reply_text("Нет данных для упражнения 🙏", reply_markup=MAIN_KB)
         return
+    _clear_other_exercise(ctx.user_data, "gr1")
     ctx.user_data["gr1_card"] = card
     st = ctx.user_data.get("gr1", {})
     n = st.get("n", 0) + 1
@@ -661,6 +662,72 @@ async def _handle_irregular_answer(update, ctx, uid, text):
     else:
         await update.message.reply_text(head, parse_mode="Markdown")
         await _send_irregular(update.message, ctx)
+
+# ---------- GR2: времена через трансформацию (SRS по grammar_state) ----------
+_EXERCISE_GROUPS = {"gr1": ("gr1_card", "gr1"), "gr2": ("gr2_card",)}
+
+def _clear_other_exercise(ud, current):
+    """Стартуя стендалон-упражнение (GR1/GR2), гасим typed-answer-состояние ДРУГИХ —
+    иначе stale-карточка (переживает рестарт через persist) перехватывает ввод."""
+    for name, keys in _EXERCISE_GROUPS.items():
+        if name != current:
+            for k in keys:
+                ud.pop(k, None)
+
+async def cmd_grammar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/grammar — трансформация времён по созревшим темам (SRS)."""
+    uid = update.effective_user.id
+    await _send_transform(update.message, ctx, uid)
+
+async def _send_transform(msg, ctx, uid):
+    """Показать transform-карточку «Поставь в <время>: <фраза>» — ответ печатью."""
+    card = db.transform_card(uid)
+    if not card:
+        ctx.user_data.pop("gr2_card", None)
+        await msg.reply_text(
+            "📐 Грамматика на сегодня повторена 👍 Темы созревают по расписанию — "
+            "возвращайся завтра.", reply_markup=MAIN_KB)
+        return
+    _clear_other_exercise(ctx.user_data, "gr2")
+    ctx.user_data["gr2_card"] = card
+    await msg.reply_text(
+        f"📐 Грамматика · {card['topic']}\n\n"
+        f"{card['label']}:\n«{card['source']}»\n\n"
+        "Напиши предложение целиком ⬇️")
+
+async def _transform_llm_ok(given, card):
+    """Узкий LLM-чек (как «💬 Natural»): засчитать естественный вариант, не совпавший дословно."""
+    system = ("Ты — справедливый проверяющий грамматику. Дан исходник в Present Simple, "
+              "целевое ВРЕМЯ и эталон. Ответь ОДНИМ словом: YES, если предложение ученика — "
+              "корректная форма исходника в нужном времени (мелкие синонимы/пунктуация ок), "
+              "иначе NO.")
+    seed = (f"Исходник: {card['source']}\nЦелевое время: {card['topic']}\n"
+            f"Эталон: {card['answer']}\nОтвет ученика: {given}")
+    try:
+        reply = await asyncio.to_thread(llm.chat, system, [{"role": "user", "content": seed}])
+    except Exception:
+        return False
+    return reply.strip().lower().startswith("yes")
+
+async def _handle_transform_answer(update, ctx, uid, text):
+    """Ответ на GR2-карточку: грейдер exact→LLM; провал → tense_aspect + подсказка ru_mistake."""
+    card = ctx.user_data.get("gr2_card")
+    if not card:
+        return
+    given = text.strip()
+    ctx.user_data.pop("gr2_card", None)
+    correct = _transform_exact_ok(given, card["answer"]) or await _transform_llm_ok(given, card)
+    if correct:
+        db.grammar_review(uid, card["topic"], True)
+        head = f"✅ Верно! «{card['answer']}»"
+    else:
+        db.grammar_review(uid, card["topic"], False)
+        db.log_error("tense_aspect", given, card["answer"], "transform", uid)
+        head = f"❌ Не совсем. Правильно: «{card['answer']}»"
+        if card.get("ru_mistake"):
+            head += f"\n❗{card['ru_mistake']}"
+    await update.message.reply_text(head)
+    await _send_transform(update.message, ctx, uid)
 
 # ---------- Слой Б: ручной руль сложности (полоса скрыта, ярлык не показываем) ----------
 def _difficulty_kb():
@@ -883,6 +950,10 @@ async def _process_user_text(update, ctx, uid, text):
 
     if ctx.user_data.get("gr1_card"):             # GR1: ждём ответ на «Past of X?»
         await _handle_irregular_answer(update, ctx, uid, text)
+        return
+
+    if ctx.user_data.get("gr2_card"):             # GR2: ждём ответ на трансформацию времени
+        await _handle_transform_answer(update, ctx, uid, text)
         return
 
     if ctx.user_data.get("warm_wid"):            # тёплое превью продукции (A4.1, вне SRS)
@@ -1312,6 +1383,17 @@ def _one_edit_away(a, b):
             i += 1
             j += 1
     return True
+
+def _transform_exact_ok(given, expected):
+    """GR2 exact-грейдер: нормализация (регистр/хвостовая пунктуация/пробелы) +
+    толерантность к одной опечатке. Дешёвый путь до узкого LLM-чека."""
+    def norm(s):
+        s = (s or "").strip().lower()
+        s = re.sub(r"[.!?,;:]+$", "", s)        # хвостовая пунктуация
+        s = re.sub(r"\s+", " ", s)               # схлопнуть пробелы
+        return s
+    g, e = norm(given), norm(expected)
+    return g == e or _one_edit_away(g, e)
 
 async def _text_attempt_on_card(update, ctx, uid, text):
     """Кнопочная карточка + напечатанный ответ (естественный инстинкт): показываем
@@ -2526,6 +2608,7 @@ def main():
     app.add_handler(CommandHandler("mistakes", mistakes_cmd))
     app.add_handler(CommandHandler("calque", cmd_calque))
     app.add_handler(CommandHandler("irregular", cmd_irregular))
+    app.add_handler(CommandHandler("grammar", cmd_grammar))
     app.add_handler(CallbackQueryHandler(on_calque, pattern=r"^ex1:"))
     app.add_handler(CommandHandler("read", read_cmd))
     app.add_handler(CommandHandler("add", add_cmd))
