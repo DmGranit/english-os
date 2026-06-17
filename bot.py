@@ -535,7 +535,8 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• «учим invest, traction» — разберу эти слова;\n"
         "• замолчишь на 25 минут — сам подведу итог сессии;\n"
         "• кнопки прячутся после нажатия — вернуть их можно значком ⌨ в строке ввода.\n\n"
-        "Команды: /topics темы · /mistakes мои ошибки · /calque найди кальку · /pace темп · "
+        "Команды: /topics темы · /mistakes мои ошибки · /calque найди кальку · "
+        "/irregular неправильные глаголы · /pace темп · "
         "/program программа дня · /remind напоминания · /add слова в очередь",
         reply_markup=MAIN_KB)
 
@@ -603,6 +604,63 @@ async def on_calque(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(
         f"{head}\n\n❌ {card['wrong']}\n✅ {card['right']}{why}",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Дальше ▶", callback_data="ex1:next")]]))
+
+# ---------- GR1: неправильные глаголы («Past of X?», типизированный ввод) ----------
+GR1_TOTAL = 5
+
+async def cmd_irregular(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/irregular — тренировка неправильных глаголов. Вне SRS."""
+    ctx.user_data["gr1"] = {"n": 0, "total": GR1_TOTAL, "ok": 0}
+    await _send_irregular(update.message, ctx)
+
+async def _send_irregular(msg, ctx):
+    """Показать карточку «Past of X?» — ответ вводится текстом."""
+    card = db.irregular_card()
+    if not card:
+        ctx.user_data.pop("gr1", None)
+        await msg.reply_text("Нет данных для упражнения 🙏", reply_markup=MAIN_KB)
+        return
+    ctx.user_data["gr1_card"] = card
+    st = ctx.user_data.get("gr1", {})
+    n = st.get("n", 0) + 1
+    total = st.get("total", GR1_TOTAL)
+    await msg.reply_text(
+        f"📝 Неправильные глаголы · {n}/{total}\n\n"
+        f"Прошедшее время (Past Simple) глагола **{card['base']}** ({card['ru']})?\n\n"
+        "Напиши ответ сообщением ⬇️",
+        parse_mode="Markdown")
+
+async def _handle_irregular_answer(update, ctx, uid, text):
+    """Обработка ответа на GR1-карточку (введён текстом)."""
+    card = ctx.user_data.get("gr1_card")
+    st   = ctx.user_data.get("gr1")
+    if not card or not st:
+        return
+    given  = text.strip().lower()
+    correct = card["past"].lower()
+    decoy   = (card.get("decoy_regular") or "").lower()
+
+    if given == correct or _one_edit_away(given, correct):
+        st["ok"] += 1
+        head = f"✅ Верно! **{card['base']}** → **{card['past']}** (pp: {card['pp']})"
+    elif decoy and given == decoy:
+        db.log_error("tense_aspect", given, card["past"], "overgeneralization", uid)
+        head = (f"❌ Это сверхобобщение — добавлять **-ed** к неправильным нельзя.\n"
+                f"**{card['base']}** → **{card['past']}** (pp: {card['pp']})")
+    else:
+        head = f"❌ Не совсем. **{card['base']}** → **{card['past']}** (pp: {card['pp']})"
+
+    st["n"] += 1
+    ctx.user_data.pop("gr1_card", None)
+
+    if st["n"] >= st["total"]:
+        ctx.user_data.pop("gr1", None)
+        await update.message.reply_text(
+            f"{head}\n\n🏁 Готово! Верных ответов: {st['ok']}/{st['total']}.",
+            parse_mode="Markdown", reply_markup=MAIN_KB)
+    else:
+        await update.message.reply_text(head, parse_mode="Markdown")
+        await _send_irregular(update.message, ctx)
 
 # ---------- Слой Б: ручной руль сложности (полоса скрыта, ярлык не показываем) ----------
 def _difficulty_kb():
@@ -821,6 +879,10 @@ async def _process_user_text(update, ctx, uid, text):
 
     if ctx.user_data.get("act_wid"):             # ждём фразу для активации нового слова
         await _handle_activation_phrase(update, ctx, uid, text)
+        return
+
+    if ctx.user_data.get("gr1_card"):             # GR1: ждём ответ на «Past of X?»
+        await _handle_irregular_answer(update, ctx, uid, text)
         return
 
     if ctx.user_data.get("warm_wid"):            # тёплое превью продукции (A4.1, вне SRS)
@@ -2463,6 +2525,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_access, pattern=r"^acc:"))
     app.add_handler(CommandHandler("mistakes", mistakes_cmd))
     app.add_handler(CommandHandler("calque", cmd_calque))
+    app.add_handler(CommandHandler("irregular", cmd_irregular))
     app.add_handler(CallbackQueryHandler(on_calque, pattern=r"^ex1:"))
     app.add_handler(CommandHandler("read", read_cmd))
     app.add_handler(CommandHandler("add", add_cmd))

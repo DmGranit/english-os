@@ -137,6 +137,13 @@ CREATE TABLE IF NOT EXISTS confuse_ref (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     root TEXT, trap TEXT, group_a TEXT, group_b TEXT, how_to TEXT
 );
+-- GR1: неправильные глаголы (формы + ловушка-сверхобобщение)
+CREATE TABLE IF NOT EXISTS irregular_ref (
+    base TEXT PRIMARY KEY,
+    past TEXT NOT NULL, pp TEXT NOT NULL, ru TEXT NOT NULL,
+    decoy_regular TEXT,
+    group_key TEXT
+);
 -- снапшот словников can-do: фиксирует набор слов ДО контент-волн (Dm5)
 CREATE TABLE IF NOT EXISTS cando_words (
     cando_id TEXT NOT NULL,
@@ -248,11 +255,49 @@ _IDEA_SEED = [
      "Думай «что мешает и что устраняет причину» — тогда issue, challenge, solution разложатся точно."),
 ]
 
+_IRREGULAR_SEED = [
+    # (base, past, pp, ru, decoy_regular, group_key)
+    ("go",      "went",    "gone",    "идти/ехать",     "goed",      "irreg"),
+    ("be",      "was",     "been",    "быть",           "beed",      "irreg"),
+    ("have",    "had",     "had",     "иметь",          "haved",     "irreg"),
+    ("do",      "did",     "done",    "делать",         "doed",      "irreg"),
+    ("say",     "said",    "said",    "говорить",       "sayed",     "irreg"),
+    ("get",     "got",     "got",     "получать",       "getted",    "irreg"),
+    ("make",    "made",    "made",    "делать/создавать","maked",    "irreg"),
+    ("know",    "knew",    "known",   "знать",          "knowed",    "irreg"),
+    ("come",    "came",    "come",    "приходить",      "comed",     "irreg"),
+    ("see",     "saw",     "seen",    "видеть",         "seed",      "irreg"),
+    ("give",    "gave",    "given",   "давать",         "gived",     "irreg"),
+    ("take",    "took",    "taken",   "брать",          "taked",     "irreg"),
+    ("find",    "found",   "found",   "находить",       "finded",    "irreg"),
+    ("tell",    "told",    "told",    "говорить/рассказывать","telled","irreg"),
+    ("become",  "became",  "become",  "становиться",    "becomed",   "irreg"),
+    ("leave",   "left",    "left",    "уходить/оставлять","leaved",  "d-t"),
+    ("feel",    "felt",    "felt",    "чувствовать",    "feeled",    "d-t"),
+    ("keep",    "kept",    "kept",    "держать/сохранять","keeped",  "d-t"),
+    ("think",   "thought", "thought", "думать",         "thinked",   "d-t"),
+    ("buy",     "bought",  "bought",  "покупать",       "buyed",     "d-t"),
+    ("bring",   "brought", "brought", "приносить",      "bringed",   "d-t"),
+    ("send",    "sent",    "sent",    "отправлять",     "sended",    "d-t"),
+    ("build",   "built",   "built",   "строить",        "builded",   "d-t"),
+    ("run",     "ran",     "run",     "бежать",         "runned",    "i-a-u"),
+    ("begin",   "began",   "begun",   "начинать",       "beginned",  "i-a-u"),
+    ("drink",   "drank",   "drunk",   "пить",           "drinked",   "i-a-u"),
+    ("write",   "wrote",   "written", "писать",         "writed",    "irreg"),
+    ("grow",    "grew",    "grown",   "расти",          "growed",    "irreg"),
+    ("fall",    "fell",    "fallen",  "падать",         "falled",    "irreg"),
+    ("hold",    "held",    "held",    "держать",        "holded",    "d-t"),
+    ("put",     "put",     "put",     "класть",         "putted",    "0-change"),
+    ("let",     "let",     "let",     "позволять",      "letted",    "0-change"),
+    ("cut",     "cut",     "cut",     "резать",         "cutted",    "0-change"),
+]
+
 def init_db():
     with _conn() as c:
         c.executescript(SCHEMA)
         _migrate(c)
         _seed_ideas(c)
+        _seed_irregular(c)
 
 def _seed_ideas(c):
     """Заполнить idea_ref канонической таблицей DNA-концептов (идемпотентно)."""
@@ -260,6 +305,12 @@ def _seed_ideas(c):
         c.execute("""INSERT OR IGNORE INTO idea_ref (idea, ru, description, thinking_pattern)
                      VALUES (?,?,?,?)""",
                   (idea, ru, description, thinking_pattern))
+
+def _seed_irregular(c):
+    """GR1: заполнить irregular_ref списком неправильных глаголов (идемпотентно)."""
+    for base, past, pp, ru, decoy, group in _IRREGULAR_SEED:
+        c.execute("""INSERT OR IGNORE INTO irregular_ref (base, past, pp, ru, decoy_regular, group_key)
+                     VALUES (?,?,?,?,?,?)""", (base, past, pp, ru, decoy, group))
 
 def _migrate(c):
     """Лёгкие миграции для уже существующих баз (ALTER не идемпотентен, проверяем колонки)."""
@@ -825,6 +876,21 @@ def calque_card():
     card["distractors"] = [d["right"] for d in distractors]
     return card
 
+def irregular_card():
+    """GR1: случайный глагол из irregular_ref для карточки «Past of X?».
+    Возвращает dict(base, past, pp, ru, decoy_regular, group_key) или None."""
+    with _conn() as c:
+        row = c.execute("SELECT * FROM irregular_ref ORDER BY RANDOM() LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+def irregular_for_word(word):
+    """GR1: запись из irregular_ref для слова (base-форма), или None.
+    Используется в deep_view для строки «📐 формы: go · went · gone»."""
+    with _conn() as c:
+        row = c.execute("SELECT * FROM irregular_ref WHERE base=?",
+                        (word.lower().strip(),)).fetchone()
+    return dict(row) if row else None
+
 def bre_ame_for_word(word):
     """BrE/AmE запись для слова (None, если нет). C3.Δb."""
     if not word:
@@ -1026,6 +1092,11 @@ def deep_view(word_id):
         lines.append(f"📐 грамматика: {gr['topic']} — {gr['formula']}")
         if gr.get("ru_mistake"):
             lines.append(f"   ❗{gr['ru_mistake']}")
+
+    # GR1: неправильные формы глагола
+    irr = irregular_for_word(w["word"])
+    if irr:
+        lines.append(f"📐 формы: {irr['base']} · {irr['past']} · {irr['pp']}")
 
     return "\n".join(lines)
 
