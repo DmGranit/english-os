@@ -7,10 +7,11 @@ rem  ??????????: ??????? ???? ??? Ctrl+C.
 rem ============================================================
 cd /d "%~dp0"
 
-rem --- single-instance guard ---
-wmic process where "name='python.exe'" get commandline 2>nul | findstr /i "bot.main" >nul
-if not errorlevel 1 (
-    echo [ERROR] Bot is already running! Close the other window first.
+rem --- single-instance guard (robust: detects BOTH `python bot.py` and `python -c ...bot.main()`) ---
+set "BOTRUNNING="
+for /f "delims=" %%i in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process).Where({ $_.Name -eq 'python.exe' -and ($_.CommandLine -match 'bot\.py' -or $_.CommandLine -match 'bot\.main') }).Count" 2^>nul') do set "BOTRUNNING=%%i"
+if not "%BOTRUNNING%"=="" if not "%BOTRUNNING%"=="0" (
+    echo [ERROR] Bot is already running ^(instances: %BOTRUNNING%^)! Close the other window/process first.
     pause
     exit /b 1
 )
