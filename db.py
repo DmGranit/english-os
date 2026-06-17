@@ -805,6 +805,26 @@ def sample_mistakes(n=8):
         ).fetchall()
     return [dict(r) for r in rows]
 
+def calque_card():
+    """EX1 («найди кальку»): одна случайная строка mistakes_ref + 2 дистрактора-`right`
+    из ДРУГИХ категорий (R44 — чтобы wrong/right одного паттерна не пересеклись в наборе).
+    Возвращает dict(category, wrong, right, why, context, distractors[2]) или None, если данных нет
+    (нужны строка с wrong+right и ≥2 «правильных» из других категорий)."""
+    with _conn() as c:
+        row = c.execute("""SELECT category, wrong, right, why, context FROM mistakes_ref
+                           WHERE wrong<>'' AND right<>'' ORDER BY RANDOM() LIMIT 1""").fetchone()
+        if not row:
+            return None
+        distractors = c.execute("""SELECT DISTINCT right FROM mistakes_ref
+                                   WHERE category<>? AND right<>'' AND right<>?
+                                   ORDER BY RANDOM() LIMIT 2""",
+                                (row["category"], row["right"])).fetchall()
+    if len(distractors) < 2:
+        return None
+    card = dict(row)
+    card["distractors"] = [d["right"] for d in distractors]
+    return card
+
 def bre_ame_for_word(word):
     """BrE/AmE запись для слова (None, если нет). C3.Δb."""
     if not word:

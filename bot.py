@@ -248,6 +248,8 @@ async def _finish_session(ud, uid, send):
         reply += (f"\n\n— записано в базу: повторений {r['ok'] + r['fail']} "
                   f"(✅ {r['ok']} / ❌ {r['fail']}), новых слов в очередь: {r['added']}"
                   f", структурных ошибок: {r.get('errors', 0)}")
+        if r.get("errors", 0):                      # EX1: были кальки → предложить тренировку распознавания
+            reply += "\n\n🕵️ Потренировать распознавание калёк? — /calque"
     db.backup()
     db.log_session(uid, ud.get("mode", "flow"))    # след сессии — для карты дня
     ud["history"] = []                             # сессия закрыта — авто-ИТОГ не повторится
@@ -533,9 +535,74 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• «учим invest, traction» — разберу эти слова;\n"
         "• замолчишь на 25 минут — сам подведу итог сессии;\n"
         "• кнопки прячутся после нажатия — вернуть их можно значком ⌨ в строке ввода.\n\n"
-        "Команды: /topics темы · /mistakes мои ошибки · /pace темп · /program программа дня · "
-        "/remind напоминания · /add слова в очередь",
+        "Команды: /topics темы · /mistakes мои ошибки · /calque найди кальку · /pace темп · "
+        "/program программа дня · /remind напоминания · /add слова в очередь",
         reply_markup=MAIN_KB)
+
+# ---------- EX1: упражнение «найди кальку» (стендалон, ВНЕ SRS) ----------
+EX1_TOTAL = 5
+
+async def cmd_calque(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/calque — тренировка распознавания русских калёк (mistakes_ref). Вне SRS."""
+    ctx.user_data["ex1"] = {"n": 0, "total": EX1_TOTAL, "ok": 0}
+    await _send_calque(update.message, ctx)
+
+async def _send_calque(msg, ctx):
+    """Показать очередную карточку «найди кальку»: 3 фразы, одна — калька."""
+    card = db.calque_card()
+    if not card:
+        ctx.user_data.pop("ex1", None)
+        await msg.reply_text("Пока нет данных для этого упражнения 🙏", reply_markup=MAIN_KB)
+        return
+    opts = [card["wrong"], *card["distractors"]]        # opts[0] — калька (верный выбор)
+    order = random.sample(range(len(opts)), len(opts))
+    shown = [opts[i] for i in order]
+    card["shown"] = shown
+    card["correct_idx"] = order.index(0)
+    ctx.user_data["ex1_card"] = card
+    st = ctx.user_data.get("ex1", {})
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(p, callback_data=f"ex1:pick:{i}")]
+                               for i, p in enumerate(shown)])
+    await msg.reply_text(
+        f"🕵️ Найди кальку · {st.get('n', 0) + 1}/{st.get('total', EX1_TOTAL)}\n\n"
+        "Одна из фраз — русская калька (так по-английски не говорят). Какая?",
+        reply_markup=kb)
+
+async def on_calque(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = _learner(update)
+    parts = q.data.split(":")                            # ex1:pick:<idx> | ex1:next
+    st = ctx.user_data.get("ex1")
+    if not st:
+        await q.edit_message_text("Упражнение устарело — запусти заново: /calque")
+        return
+    if parts[1] == "next":
+        st["n"] += 1
+        if st["n"] >= st["total"]:
+            ctx.user_data.pop("ex1", None)
+            ctx.user_data.pop("ex1_card", None)
+            await q.edit_message_text(f"🏁 Готово! Калёк распознано: {st['ok']}/{st['total']}.\n"
+                                      "Промахи ушли в твой журнал ошибок (/mistakes).")
+            await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
+            return
+        await _send_calque(q.message, ctx)
+        return
+    card = ctx.user_data.get("ex1_card")
+    if not card:
+        return
+    picked = int(parts[2])
+    if picked == card["correct_idx"]:
+        st["ok"] += 1
+        head = "✅ Верно! Это калька с русского."
+    else:
+        db.log_error(card["category"], card["shown"][picked], card["right"],
+                     "ex1_calque_miss", uid)
+        head = "❌ Не она. Это нормальная английская фраза."
+    why = f"\n💡 {card['why']}" if card.get("why") else ""
+    await q.edit_message_text(
+        f"{head}\n\n❌ {card['wrong']}\n✅ {card['right']}{why}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Дальше ▶", callback_data="ex1:next")]]))
 
 # ---------- Слой Б: ручной руль сложности (полоса скрыта, ярлык не показываем) ----------
 def _difficulty_kb():
@@ -2395,6 +2462,8 @@ def main():
     app.add_error_handler(on_error)            # ни одно падение не уходит молча
     app.add_handler(CallbackQueryHandler(on_access, pattern=r"^acc:"))
     app.add_handler(CommandHandler("mistakes", mistakes_cmd))
+    app.add_handler(CommandHandler("calque", cmd_calque))
+    app.add_handler(CallbackQueryHandler(on_calque, pattern=r"^ex1:"))
     app.add_handler(CommandHandler("read", read_cmd))
     app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("abstats", abstats_cmd))
