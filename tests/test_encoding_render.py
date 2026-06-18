@@ -41,8 +41,8 @@ def test_encoding_view_decomposes_family_with_affix(fresh_db):
     with fresh_db._conn() as c:
         c.execute("UPDATE content SET family=? WHERE word_id=1", ('["investment", "investor"]',))
     txt = fresh_db.encoding_view(1)
-    assert "investment" in txt
-    assert "-ment" in txt            # аффикс показан с акцентом (investment = invest + -ment)
+    assert "-ment" in txt            # аффикс показан
+    assert "invest·ment" in txt      # акцент на аффиксе (насмотренность), не голое слово
 
 def test_encoding_view_caps_nest_at_3(fresh_db):
     with fresh_db._conn() as c:

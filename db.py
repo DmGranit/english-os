@@ -1372,8 +1372,18 @@ def encoding_view(word_id):
             if det:
                 info = {"affix": det["affix"], "meaning_ru": det.get("meaning_ru")}
         if info and info.get("affix"):
+            aff = info["affix"]
+            acc = m
+            if aff.startswith("-"):
+                suf = aff.strip("-")
+                if m.lower().endswith(suf) and len(m) > len(suf):
+                    acc = m[:-len(suf)] + "·" + m[-len(suf):]
+            elif aff.endswith("-"):
+                pre = aff.strip("-")
+                if m.lower().startswith(pre) and len(m) > len(pre):
+                    acc = m[:len(pre)] + "·" + m[len(pre):]
             tail = f" — {info['meaning_ru']}" if info.get("meaning_ru") else ""
-            lines.append(f"   ↳ {m}  ({info['affix']}{tail})")
+            lines.append(f"   ↳ {acc}  ({aff}{tail})")
         else:
             lines.append(f"   ↳ {m}")
         shown.append(m)
