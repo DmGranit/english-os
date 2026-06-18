@@ -407,6 +407,9 @@ def _migrate(c):
         c.execute("ALTER TABLE reviews ADD COLUMN direction TEXT")
     if "card_type" not in cols:               # тип карточки: mcq|cloze|typed|assembly|self
         c.execute("ALTER TABLE reviews ADD COLUMN card_type TEXT")  # для честного A/B (несравнимы)
+    ccols = {r["name"] for r in c.execute("PRAGMA table_info(content)").fetchall()}
+    if ccols and "derivation" not in ccols:   # B1: разбор «база+аффикс» производного слова (JSON)
+        c.execute("ALTER TABLE content ADD COLUMN derivation TEXT")
     scols = {r["name"] for r in c.execute("PRAGMA table_info(state)").fetchall()}
     if scols and "promoted_via" not in scols:  # источник ввода: new|direct|scenario (A1.3)
         c.execute("ALTER TABLE state ADD COLUMN promoted_via TEXT")
@@ -981,6 +984,27 @@ def affix_info(affix):
         r = c.execute("""SELECT affix, kind, meaning_ru, function, examples, note
                          FROM affix_ref WHERE affix=?""", (affix,)).fetchone()
         return dict(r) if r else None
+
+def set_derivation(word_id, base, affix, gloss=None):
+    """B1: записать разбор словообразования производного слова (база+аффикс) как JSON."""
+    payload = json.dumps({"base": base, "affix": affix, "gloss": gloss}, ensure_ascii=False)
+    with _conn() as c:
+        c.execute("UPDATE content SET derivation=? WHERE word_id=?", (payload, word_id))
+
+def decompose(word_id):
+    """B1: разбор «база+аффикс» слова + значение аффикса из affix_ref. None, если нет."""
+    with _conn() as c:
+        r = c.execute("SELECT derivation FROM content WHERE word_id=?", (word_id,)).fetchone()
+    if not r or not r["derivation"]:
+        return None
+    try:
+        d = json.loads(r["derivation"])
+    except (ValueError, TypeError):
+        return None
+    info = affix_info(d.get("affix")) if d.get("affix") else None
+    if info:
+        d["affix_meaning"] = info["meaning_ru"]
+    return d
 
 def affixes_all(kind=None):
     """Все аффиксы (или одного типа prefix|suffix) — для насмотренности/витрины."""

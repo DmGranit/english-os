@@ -23,3 +23,16 @@ def test_affixes_all_filters_by_kind(fresh_db):
     # флексии исключены — множителя ради
     bases = {a["affix"] for a in allx}
     assert "-ed" not in bases and "-ing" not in bases and "-s" not in bases
+
+
+def test_derivation_roundtrip_and_affix_join(fresh_db):
+    # слово 1 = invest (есть в conftest WORDS); привяжем как производное (демо-связка)
+    fresh_db.set_derivation(1, base="vest", affix="in-", gloss="вкладывать внутрь")
+    d = fresh_db.decompose(1)
+    assert d["base"] == "vest" and d["affix"] == "in-"
+    assert d["gloss"] == "вкладывать внутрь"
+    assert "отрицание" in (d.get("affix_meaning") or "")   # подмешан meaning_ru из affix_ref (in-)
+
+
+def test_decompose_none_when_absent(fresh_db):
+    assert fresh_db.decompose(2) is None                    # у deadline нет derivation
