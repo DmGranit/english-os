@@ -1,4 +1,6 @@
 """B2: богатое предъявление — detect_affix (консервативно) + encoding_view + wiring."""
+import asyncio, types
+import bot
 import db
 from conftest import UID
 
@@ -51,3 +53,16 @@ def test_encoding_view_caps_nest_at_3(fresh_db):
     txt = fresh_db.encoding_view(1)
     shown = [m for m in ["investment", "investor", "investing", "reinvest", "divest"] if m in txt]
     assert len(shown) <= 3           # ≤3 производных за первый контакт (D4)
+
+
+# ---------- Task 3: wiring NEW-урок начинается с encoding_view ----------
+
+def test_new_lesson_starts_with_encoding_view(fresh_db, monkeypatch):
+    """При входе в NEW-урок первая выдача = encoding_view первого слова + enc_pending=True."""
+    monkeypatch.setattr(bot.db, "promote_new", lambda uid: [bot.db.get_word(1)])
+    sent = []
+    async def out(text, markup=None): sent.append((text, markup))
+    ctx = types.SimpleNamespace(user_data={})
+    asyncio.run(bot._enter_mode(out, ctx, UID, "new"))
+    assert any("invest" in (t or "") and "🆕" in (t or "") for t, _ in sent)  # предъявление первым
+    assert ctx.user_data.get("enc_pending")                                   # помечен шаг проверки

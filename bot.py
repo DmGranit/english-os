@@ -837,8 +837,11 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         ctx.user_data["review_ok"]       = 0
         ctx.user_data["review_fail"]     = 0
         ctx.user_data["card_shown_at"]   = time.time()
-        text, kb = _card_payload(ctx, uid)
-        await out(text, kb)
+        first_wid = wids[0]
+        ctx.user_data["enc_pending"] = True       # после «Дальше ▶» — карточка-проверка
+        await out(db.encoding_view(first_wid),
+                  InlineKeyboardMarkup([[InlineKeyboardButton("Дальше ▶", callback_data="enc:next")]]))
+        return
 
     elif mode == "review":
         due, st = db.due_today(uid, limit=db.DECK_CAP)   # кап колоды: не марафон на 90 карт
@@ -1797,6 +1800,15 @@ async def on_flip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"«{word['word']}»{ipa} — {word['ru']}{ex}{block}\n\nТы вспомнил?",
         reply_markup=_review_kb(reveal=True))
 
+async def on_enc_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """B2: «Дальше ▶» после богатого предъявления — показать первую карточку-проверку."""
+    q = update.callback_query
+    await q.answer()
+    uid = _learner(update)
+    ctx.user_data.pop("enc_pending", None)
+    text, kb = _card_payload(ctx, uid)            # существующая карточка-проверка первого слова
+    await q.edit_message_text(text, reply_markup=kb)
+
 async def on_assembly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Конструктор SVOMPT (box 4): тапы по словам, результат — объективный (по ошибкам)."""
     q = update.callback_query
@@ -2657,6 +2669,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_warm, pattern=r"^warm:"))   # превью продукции
     app.add_handler(CallbackQueryHandler(on_mcq, pattern=r"^mcq:"))
     app.add_handler(CallbackQueryHandler(on_flip, pattern=r"^flip:"))
+    app.add_handler(CallbackQueryHandler(on_enc_next, pattern="^enc:next$"))
     app.add_handler(CallbackQueryHandler(on_activation, pattern=r"^act:"))
     app.add_handler(CallbackQueryHandler(on_rate, pattern=r"^rate:"))
     app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
