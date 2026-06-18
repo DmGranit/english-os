@@ -31,6 +31,7 @@ def _ctx(box, wid=1):
 
 def test_box1_is_mcq(fresh_db, monkeypatch):
     monkeypatch.setattr(bot.random, "sample", lambda seq, k: list(seq))
+    monkeypatch.setattr(bot, "_card_format", lambda *a, **k: "mcq")  # P2: фиксируем MCQ-ветку (не дата-рулетка)
     ctx = _ctx(1)
     text, kb = bot._card_payload(ctx, UID)
     assert "value" not in text                         # ответ не подсвечен
@@ -75,6 +76,7 @@ def _run_mcq(fresh_db, monkeypatch, pick_wid, queue=None, boxes=None):
     monkeypatch.setattr(db, "adapt_band", lambda uid: None)
     monkeypatch.setattr(db, "backup", lambda: None)
     monkeypatch.setattr(bot.random, "sample", lambda seq, k: list(seq))
+    monkeypatch.setattr(bot, "_card_format", lambda *a, **k: "mcq")  # P2: фиксируем MCQ-ветку (не дата-рулетка)
     ctx = _ctx(1) if not queue else types.SimpleNamespace(
         user_data={"review_queue": queue, "review_box": boxes, "review_pos": 0})
     bot._card_payload(ctx, UID)                        # построить MCQ (кладёт mcq_answer)
