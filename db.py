@@ -1025,22 +1025,37 @@ _MIN_STEM = 3   # остаток-основа короче → матч аффи
 def detect_affix(word, base=None):
     """Консервативно определить деривационный аффикс слова по affix_ref.
     Возвращает affix_info-словарь (+ 'stem'), либо None если разбор ненадёжен.
-    Корректность важнее полноты: ложная морфология недопустима (B2)."""
+    Корректность важнее полноты: ложная морфология недопустима (B2).
+    Если дан base, требует чтобы вычисленная основа (stem) и base имели общий префикс ≥ 3 символов
+    (проверка того, что деривация построена на действительно родственном корне)."""
     w = (word or "").strip().lower()
     if len(w) < _MIN_STEM + 1:
         return None
+    b = (base or "").strip().lower() if base else None
     suffixes = [a for a in affixes_all("suffix")]
     prefixes = [a for a in affixes_all("prefix")]
     # суффиксы: самый длинный первым; остаток-основа ≥ _MIN_STEM
     for a in sorted(suffixes, key=lambda x: -len(x["affix"])):
         suf = a["affix"].lstrip("-")
         if w.endswith(suf) and len(w) - len(suf) >= _MIN_STEM:
-            return dict(a, stem=w[: len(w) - len(suf)])
+            stem = w[: len(w) - len(suf)]
+            # если дан base, проверить что stem и base имеют общий префикс ≥ 3
+            if b:
+                common_len = len(os.path.commonprefix([stem, b]))
+                if common_len < 3:
+                    continue  # base дан, но стемы не совпадают → пропустить
+            return dict(a, stem=stem)
     # приставки
     for a in sorted(prefixes, key=lambda x: -len(x["affix"])):
         pre = a["affix"].rstrip("-")
         if w.startswith(pre) and len(w) - len(pre) >= _MIN_STEM:
-            return dict(a, stem=w[len(pre):])
+            stem = w[len(pre):]
+            # если дан base, проверить что stem и base имеют общий префикс ≥ 3
+            if b:
+                common_len = len(os.path.commonprefix([stem, b]))
+                if common_len < 3:
+                    continue  # base дан, но стемы не совпадают → пропустить
+            return dict(a, stem=stem)
     return None
 
 def bre_ame_for_word(word):
