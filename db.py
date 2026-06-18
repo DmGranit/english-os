@@ -1454,20 +1454,40 @@ def _interleave_by_theme(rows):
         i = j
     return out
 
+def _cap_with_productive_reserve(rows, limit):
+    """Кап колоды (B1) с резервом под продукцию (v2.6, пост-смоук). Чистое «самые
+    просроченные первыми» + кап топит зрелые продуктивные (box>=PRODUCTIVE_FROM_BOX)
+    карточки за беклогом узнавания — отсюда операционный `prod=0`. Резервируем до
+    половины колоды под продукцию, остальное — узнавание; недобор любой стороны
+    добирается другой. Исходный (по просрочке) порядок сохраняется для интерливинга."""
+    if len(rows) <= limit:
+        return rows
+    prod  = [r for r in rows if (r["s_box"] or 0) >= PRODUCTIVE_FROM_BOX]
+    recog = [r for r in rows if (r["s_box"] or 0) <  PRODUCTIVE_FROM_BOX]
+    take_prod  = prod[:min(len(prod), max(1, limit // 2))]
+    take_recog = recog[:limit - len(take_prod)]
+    if len(take_prod) + len(take_recog) < limit:          # одна сторона короче резерва — добрать другой
+        rest = prod[len(take_prod):] + recog[len(take_recog):]
+        take_prod += rest[:limit - len(take_prod) - len(take_recog)]
+    keep = {r["word_id"] for r in take_prod + take_recog}
+    return [r for r in rows if r["word_id"] in keep]
+
+
 def due_today(user_id=DEFAULT_USER, limit=None):
     """Слова к повторению: learning/forgot + созревшие known (maintenance) с
     next_review<=сегодня. Самые просроченные первыми, внутри дня — темы чередуются
-    (A4.3). limit — кап колоды (B1)."""
+    (A4.3). limit — кап колоды (B1) с резервом под продукцию (анти-старвейшн)."""
     today = _today()
-    cap = f"LIMIT {int(limit)}" if limit else ""
     with _conn() as c:
-        rows = c.execute(f"""SELECT c.*, s.status AS s_status, s.box AS s_box,
+        rows = c.execute("""SELECT c.*, s.status AS s_status, s.box AS s_box,
                                    s.next_review AS s_next
                             FROM state s JOIN content c USING(word_id)
                             WHERE s.user_id=? AND s.status IN ('learning','forgot','known')
                               AND s.next_review IS NOT NULL AND s.next_review<=?
-                            ORDER BY s.next_review ASC, c.priority DESC {cap}""",
+                            ORDER BY s.next_review ASC, c.priority DESC""",
                          (user_id, today)).fetchall()
+    if limit:
+        rows = _cap_with_productive_reserve(rows, int(limit))
     rows = _interleave_by_theme(rows)
     words = [_row_to_word(r) for r in rows]
     st = {r["word_id"]: {"status": r["s_status"], "box": r["s_box"]} for r in rows}
