@@ -992,7 +992,9 @@ def set_derivation(word_id, base, affix, gloss=None):
         c.execute("UPDATE content SET derivation=? WHERE word_id=?", (payload, word_id))
 
 def decompose(word_id):
-    """B1: разбор «база+аффикс» слова + значение аффикса из affix_ref. None, если нет."""
+    """B1: разбор «база+аффикс» слова + значение аффикса из affix_ref. None, если нет.
+    Ключ affix_meaning присутствует ТОЛЬКО если аффикс найден в affix_ref —
+    потребителю брать через .get('affix_meaning')."""
     with _conn() as c:
         r = c.execute("SELECT derivation FROM content WHERE word_id=?", (word_id,)).fetchone()
     if not r or not r["derivation"]:
@@ -1007,13 +1009,14 @@ def decompose(word_id):
     return d
 
 def affixes_all(kind=None):
-    """Все аффиксы (или одного типа prefix|suffix) — для насмотренности/витрины."""
+    """Все аффиксы (или одного типа prefix|suffix) — для насмотренности/витрины.
+    Форма словаря совпадает с affix_info (включая note) — единый контракт для B2."""
     with _conn() as c:
         if kind:
-            rows = c.execute("""SELECT affix, kind, meaning_ru, function, examples
+            rows = c.execute("""SELECT affix, kind, meaning_ru, function, examples, note
                                 FROM affix_ref WHERE kind=? ORDER BY affix""", (kind,)).fetchall()
         else:
-            rows = c.execute("""SELECT affix, kind, meaning_ru, function, examples
+            rows = c.execute("""SELECT affix, kind, meaning_ru, function, examples, note
                                 FROM affix_ref ORDER BY kind, affix""").fetchall()
         return [dict(r) for r in rows]
 

@@ -25,6 +25,13 @@ def test_affixes_all_filters_by_kind(fresh_db):
     assert "-ed" not in bases and "-ing" not in bases and "-s" not in bases
 
 
+def test_affixes_all_shape_matches_affix_info(fresh_db):
+    # парность формы: один контракт affix-словаря для витрины (B2) и точечного лукапа
+    one = fresh_db.affixes_all()[0]
+    info = fresh_db.affix_info(one["affix"])
+    assert set(one.keys()) == set(info.keys())              # те же ключи, включая note
+
+
 def test_derivation_roundtrip_and_affix_join(fresh_db):
     # слово 1 = invest (есть в conftest WORDS); привяжем как производное (демо-связка)
     fresh_db.set_derivation(1, base="vest", affix="in-", gloss="вкладывать внутрь")
