@@ -804,6 +804,9 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
     ctx.user_data["history"] = []
     ctx.user_data.pop("awaiting_slot_hours", None)   # ушёл учиться — настройку часов отменяем
     ctx.user_data.pop("ctx_checked", None)           # новая сессия — снова можно поймать цель
+    for stale in ("gr1_card", "gr2_card", "warm_wid", "act_wid"):   # брошенное упражнение/
+        ctx.user_data.pop(stale, None)               # активация не должна перехватывать typed-ответ
+
     db.ensure_user_state(uid)            # новый ученик / новые слова получают state
 
     if mode == "new":
