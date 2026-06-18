@@ -29,3 +29,25 @@ def test_detect_affix_uses_base_to_reject_unrelated(fresh_db):
     assert fresh_db.detect_affix("strategic", base="strategy")["affix"] == "-ic"
     # no base → unchanged behavior (prefix still works)
     assert fresh_db.detect_affix("unhappy")["affix"] == "un-"
+
+def test_encoding_view_shows_word_translation_example(fresh_db):
+    # conftest: word_id 1 = invest / инвестировать, есть example? (в conftest example пуст —
+    # проверяем устойчивость: заголовок и перевод обязательно есть)
+    txt = fresh_db.encoding_view(1)
+    assert "invest" in txt and "инвестировать" in txt
+
+def test_encoding_view_decomposes_family_with_affix(fresh_db):
+    # дать invest гнездо с явным деривационным членом
+    with fresh_db._conn() as c:
+        c.execute("UPDATE content SET family=? WHERE word_id=1", ('["investment", "investor"]',))
+    txt = fresh_db.encoding_view(1)
+    assert "investment" in txt
+    assert "-ment" in txt            # аффикс показан с акцентом (investment = invest + -ment)
+
+def test_encoding_view_caps_nest_at_3(fresh_db):
+    with fresh_db._conn() as c:
+        c.execute("UPDATE content SET family=? WHERE word_id=1",
+                  ('["investment", "investor", "investing", "reinvest", "divest"]',))
+    txt = fresh_db.encoding_view(1)
+    shown = [m for m in ["investment", "investor", "investing", "reinvest", "divest"] if m in txt]
+    assert len(shown) <= 3           # ≤3 производных за первый контакт (D4)

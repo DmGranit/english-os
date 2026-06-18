@@ -22,6 +22,7 @@ MAINTENANCE_DAYS = 90     # known-слова возвращаются на «п�
                           # без извлечения след угасает; can-do-прокси не должен врать)
 PRODUCTIVE_FROM_BOX = 3   # box 1–2: узнавание EN→RU (recog); box 3+: продукция RU→EN (prod)
 NATION_TARGET = 3000      # ориентир покрытия: ~3000 семей слов ≈ 95% текстов (Nation)
+ENCODING_NEST_MAX = 3     # ≤3 производных за первый контакт (D4); остальное — в «🔍 Глубже»
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS content (
@@ -1340,6 +1341,47 @@ def deep_view(word_id):
     if irr:
         lines.append(f"📐 формы: {irr['base']} · {irr['past']} · {irr['pp']}")
 
+    return "\n".join(lines)
+
+def encoding_view(word_id):
+    """B2: богатое предъявление слова при первом контакте — узел + гнездо (≤3 производных
+    с акцентом на аффиксе, где разбор надёжен) + пример. Деградирует мягко: нет гнезда/
+    аффикса → слово+перевод+пример. Насмотренность копится продольно."""
+    w = get_word(word_id)
+    if not w:
+        return ""
+    lines = [f"🆕 {w['word']} — {w['ru']}"]
+    # гнездо производных
+    fam = w.get("family") or []
+    shown = []
+    for member in fam:
+        if len(shown) >= ENCODING_NEST_MAX:
+            break
+        m = str(member).strip()
+        if not m or m.lower() == w["word"].lower():
+            continue
+        # точный разбор, если член есть в базе со своим derivation; иначе эвристика
+        info = None
+        mid = find_word_id(m)
+        if mid:
+            d = decompose(mid)
+            if d and d.get("affix"):
+                info = {"affix": d["affix"], "meaning_ru": d.get("affix_meaning")}
+        if not info:
+            det = detect_affix(m, base=w["word"])
+            if det:
+                info = {"affix": det["affix"], "meaning_ru": det.get("meaning_ru")}
+        if info and info.get("affix"):
+            tail = f" — {info['meaning_ru']}" if info.get("meaning_ru") else ""
+            lines.append(f"   ↳ {m}  ({info['affix']}{tail})")
+        else:
+            lines.append(f"   ↳ {m}")
+        shown.append(m)
+    if shown:
+        lines.insert(1, "🌱 из того же гнезда:")
+    # пример
+    if w.get("example"):
+        lines.append(f"📝 {w['example']}")
     return "\n".join(lines)
 
 def branch_words(word_id, user_id=DEFAULT_USER, n=5):
