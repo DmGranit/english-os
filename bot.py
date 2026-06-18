@@ -692,6 +692,11 @@ def _clear_other_exercise(ud, current):
             for k in keys:
                 ud.pop(k, None)
 
+# Все pending-«ждёт ответ» состояния: вход в режим обучения (NEW/REVIEW/SCENARIO/FLOW)
+# бросает их все — иначе брошенное упражнение (переживает рестарт через persist)
+# перехватывает напечатанный ответ режима раньше typed_wid (поймано живым смоуком 19.06).
+_PENDING_ANSWER_KEYS = ("gr1_card", "gr2_card", "ex1", "ex1_card", "warm_wid", "act_wid")
+
 async def cmd_grammar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/grammar — трансформация времён по созревшим темам (SRS)."""
     uid = update.effective_user.id
@@ -804,8 +809,8 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
     ctx.user_data["history"] = []
     ctx.user_data.pop("awaiting_slot_hours", None)   # ушёл учиться — настройку часов отменяем
     ctx.user_data.pop("ctx_checked", None)           # новая сессия — снова можно поймать цель
-    for stale in ("gr1_card", "gr2_card", "warm_wid", "act_wid"):   # брошенное упражнение/
-        ctx.user_data.pop(stale, None)               # активация не должна перехватывать typed-ответ
+    for _stale in _PENDING_ANSWER_KEYS:              # брошенное упражнение/активация не должно
+        ctx.user_data.pop(_stale, None)              # перехватывать typed-ответ режима
 
     db.ensure_user_state(uid)            # новый ученик / новые слова получают state
 
