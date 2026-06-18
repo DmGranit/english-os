@@ -1020,6 +1020,29 @@ def affixes_all(kind=None):
                                 FROM affix_ref ORDER BY kind, affix""").fetchall()
         return [dict(r) for r in rows]
 
+_MIN_STEM = 3   # остаток-основа короче → матч аффикса считаем ложным (table→-able)
+
+def detect_affix(word, base=None):
+    """Консервативно определить деривационный аффикс слова по affix_ref.
+    Возвращает affix_info-словарь (+ 'stem'), либо None если разбор ненадёжен.
+    Корректность важнее полноты: ложная морфология недопустима (B2)."""
+    w = (word or "").strip().lower()
+    if len(w) < _MIN_STEM + 1:
+        return None
+    suffixes = [a for a in affixes_all("suffix")]
+    prefixes = [a for a in affixes_all("prefix")]
+    # суффиксы: самый длинный первым; остаток-основа ≥ _MIN_STEM
+    for a in sorted(suffixes, key=lambda x: -len(x["affix"])):
+        suf = a["affix"].lstrip("-")
+        if w.endswith(suf) and len(w) - len(suf) >= _MIN_STEM:
+            return dict(a, stem=w[: len(w) - len(suf)])
+    # приставки
+    for a in sorted(prefixes, key=lambda x: -len(x["affix"])):
+        pre = a["affix"].rstrip("-")
+        if w.startswith(pre) and len(w) - len(pre) >= _MIN_STEM:
+            return dict(a, stem=w[len(pre):])
+    return None
+
 def bre_ame_for_word(word):
     """BrE/AmE запись для слова (None, если нет). C3.Δb."""
     if not word:
