@@ -152,6 +152,15 @@ CREATE TABLE IF NOT EXISTS irregular_ref (
     decoy_regular TEXT,
     group_key TEXT
 );
+-- B1: деривационные аффиксы (приставки и суффиксы)
+CREATE TABLE IF NOT EXISTS affix_ref (
+    affix TEXT PRIMARY KEY,          -- "un-", "-ize"
+    kind TEXT NOT NULL,              -- prefix | suffix
+    meaning_ru TEXT NOT NULL,        -- значение по-русски
+    function TEXT,                   -- смена части речи / роль
+    examples TEXT,                   -- 2-3 прозрачных примера через запятую
+    note TEXT
+);
 -- снапшот словников can-do: фиксирует набор слов ДО контент-волн (Dm5)
 CREATE TABLE IF NOT EXISTS cando_words (
     cando_id TEXT NOT NULL,
@@ -300,6 +309,51 @@ _IRREGULAR_SEED = [
     ("cut",     "cut",     "cut",     "резать",         "cutted",    "0-change"),
 ]
 
+# Деривационные аффиксы (Bauer & Nation 1993 — продуктивность; приставки — Sowell/White).
+# Флексии (-s/-ed/-ing/сравнит. -er/-est) НЕ входят: это грамматика, не множитель словаря.
+_AFFIX_SEED = [
+    # --- приставки ---
+    ("un-",     "prefix", "отрицание / обратное действие", "часть речи не меняется", "unhappy, undo, unfair"),
+    ("re-",     "prefix", "снова / назад",                  "часть речи не меняется", "rewrite, return, rebuild"),
+    ("in-",     "prefix", "отрицание (не-); варианты im-/il-/ir-", "→ прил.", "invisible, impossible, illegal, irregular"),
+    ("dis-",    "prefix", "отрицание / противоположность",  "часть речи не меняется", "disagree, disappear, dishonest"),
+    ("pre-",    "prefix", "до / заранее",                    "часть речи не меняется", "preview, prepare, predict"),
+    ("mis-",    "prefix", "неправильно / ошибочно",          "часть речи не меняется", "misunderstand, mislead, misuse"),
+    ("over-",   "prefix", "сверх / чрезмерно",               "часть речи не меняется", "overwork, overload, overcome"),
+    ("under-",  "prefix", "недо- / под",                     "часть речи не меняется", "underestimate, undergo, underline"),
+    ("out-",    "prefix", "превзойти / вне",                 "часть речи не меняется", "outperform, outgrow, outcome"),
+    ("sub-",    "prefix", "под / ниже",                      "часть речи не меняется", "submarine, subway, substandard"),
+    ("inter-",  "prefix", "между / взаимно",                 "часть речи не меняется", "international, interact, interface"),
+    ("trans-",  "prefix", "через / пере-",                   "часть речи не меняется", "transfer, transform, translate"),
+    ("de-",     "prefix", "снятие / обратное",               "часть речи не меняется", "devalue, decode, deactivate"),
+    ("non-",    "prefix", "не- / отсутствие",                "часть речи не меняется", "nonsense, nonstop, nonprofit"),
+    ("anti-",   "prefix", "против",                          "часть речи не меняется", "antivirus, antisocial, antibody"),
+    ("co-",     "prefix", "совместно",                       "часть речи не меняется", "cooperate, coworker, coordinate"),
+    ("super-",  "prefix", "сверх / над",                     "часть речи не меняется", "supervise, superpower, supermarket"),
+    ("ex-",     "prefix", "бывший / из",                     "часть речи не меняется", "ex-partner, export, exit"),
+    ("en-",     "prefix", "придавать качество",              "→ глагол",               "enable, enrich, encourage"),
+    ("fore-",   "prefix", "заранее / перед",                 "часть речи не меняется", "forecast, foresee, foreword"),
+    # --- суффиксы ---
+    ("-er",     "suffix", "тот, кто делает (деятель); вариант -or", "глагол → сущ.", "teacher, worker, actor"),
+    ("-tion",   "suffix", "действие / состояние; вариант -sion",    "глагол → сущ.", "action, creation, decision"),
+    ("-ment",   "suffix", "действие / результат",            "глагол → сущ.",          "agreement, development, payment"),
+    ("-ness",   "suffix", "качество / состояние",            "прил. → сущ.",           "happiness, kindness, darkness"),
+    ("-ity",    "suffix", "качество / состояние",            "прил. → сущ.",           "ability, security, activity"),
+    ("-ance",   "suffix", "состояние / качество; вариант -ence", "→ сущ.",             "importance, performance, difference"),
+    ("-ize",    "suffix", "делать / превращать; вариант -ise", "сущ./прил. → глагол",  "modernize, organize, realize"),
+    ("-ify",    "suffix", "делать / придавать свойство",     "→ глагол",               "simplify, clarify, justify"),
+    ("-able",   "suffix", "способный / -имый; вариант -ible","глагол → прил.",         "readable, comfortable, possible"),
+    ("-ful",    "suffix", "полный чего-то",                  "сущ. → прил.",           "helpful, useful, careful"),
+    ("-less",   "suffix", "без / лишённый",                  "сущ. → прил.",           "useless, hopeless, careless"),
+    ("-al",     "suffix", "относящийся к",                   "сущ. → прил.",           "natural, personal, central"),
+    ("-ous",    "suffix", "обладающий качеством",            "сущ. → прил.",           "dangerous, famous, nervous"),
+    ("-ive",    "suffix", "склонный / имеющий свойство",     "глагол → прил.",         "active, creative, effective"),
+    ("-ic",     "suffix", "относящийся к",                   "сущ. → прил.",           "basic, economic, specific"),
+    ("-ly",     "suffix", "образ действия (наречие)",        "прил. → нареч.",         "quickly, clearly, easily"),
+    ("-ist",    "suffix", "человек (профессия/приверженец)", "→ сущ.",                 "artist, scientist, specialist"),
+    ("-ism",    "suffix", "учение / явление",                "→ сущ.",                 "tourism, realism, criticism"),
+]
+
 # GR2: трансформации времён. (topic, label, source [Present Simple], answer [целевое время])
 # topic совпадает с именами grammar_ref — чтобы grammar_ru_mistake давал подсказку по теме.
 _TRANSFORM_SEED = [
@@ -321,6 +375,7 @@ def init_db():
         _migrate(c)
         _seed_ideas(c)
         _seed_irregular(c)
+        _seed_affixes(c)
 
 def _seed_ideas(c):
     """Заполнить idea_ref канонической таблицей DNA-концептов (идемпотентно)."""
@@ -334,6 +389,12 @@ def _seed_irregular(c):
     for base, past, pp, ru, decoy, group in _IRREGULAR_SEED:
         c.execute("""INSERT OR IGNORE INTO irregular_ref (base, past, pp, ru, decoy_regular, group_key)
                      VALUES (?,?,?,?,?,?)""", (base, past, pp, ru, decoy, group))
+
+def _seed_affixes(c):
+    """B1: заполнить affix_ref деривационными аффиксами (идемпотентно)."""
+    for affix, kind, meaning_ru, function, examples in _AFFIX_SEED:
+        c.execute("""INSERT OR IGNORE INTO affix_ref (affix, kind, meaning_ru, function, examples)
+                     VALUES (?,?,?,?,?)""", (affix, kind, meaning_ru, function, examples))
 
 def _migrate(c):
     """Лёгкие миграции для уже существующих баз (ALTER не идемпотентен, проверяем колонки)."""
@@ -913,6 +974,24 @@ def irregular_for_word(word):
         row = c.execute("SELECT * FROM irregular_ref WHERE base=?",
                         (word.lower().strip(),)).fetchone()
     return dict(row) if row else None
+
+def affix_info(affix):
+    """Карточка аффикса из affix_ref (для разбора словообразования). None, если нет."""
+    with _conn() as c:
+        r = c.execute("""SELECT affix, kind, meaning_ru, function, examples, note
+                         FROM affix_ref WHERE affix=?""", (affix,)).fetchone()
+        return dict(r) if r else None
+
+def affixes_all(kind=None):
+    """Все аффиксы (или одного типа prefix|suffix) — для насмотренности/витрины."""
+    with _conn() as c:
+        if kind:
+            rows = c.execute("""SELECT affix, kind, meaning_ru, function, examples
+                                FROM affix_ref WHERE kind=? ORDER BY affix""", (kind,)).fetchall()
+        else:
+            rows = c.execute("""SELECT affix, kind, meaning_ru, function, examples
+                                FROM affix_ref ORDER BY kind, affix""").fetchall()
+        return [dict(r) for r in rows]
 
 def bre_ame_for_word(word):
     """BrE/AmE запись для слова (None, если нет). C3.Δb."""
