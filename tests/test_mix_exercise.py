@@ -194,3 +194,32 @@ def test_lesson_advance_mid_deck_sets_enc_pending(fresh_db, monkeypatch):
     assert ctx.user_data.get("enc_pending") is True
     assert ctx.user_data["review_pos"] == 1
     assert replies and "view:2" in replies[0]
+
+
+# ─── test: full-loop integration — two words, present → exercise → present ───
+
+def _collect(buf):
+    async def r(text=None, **k): buf.append(text); return None
+    return r
+
+
+def test_new_lesson_full_loop_two_words(fresh_db, monkeypatch):
+    monkeypatch.setattr(bot.db, "promote_new", lambda uid: [bot.db.get_word(1), bot.db.get_word(2)])
+
+    sent = []
+    async def out(text, markup=None): sent.append(text)
+    ctx = types.SimpleNamespace(user_data={})
+    asyncio.run(bot._enter_mode(out, ctx, UID, "new"))
+
+    # первое слово предъявлено, ждём «Дальше» → упражнение
+    assert any("🆕" in (t or "") for t in sent)
+    assert ctx.user_data.get("enc_pending") and ctx.user_data.get("review_queue") == [1, 2]
+
+    # сымитировать ответ на упражнение первого слова → должно прийти предъявление второго
+    ctx.user_data["mix"] = {"wid": 1, "expected": "x", "kind": "production"}
+    replies = []
+    msg = types.SimpleNamespace(reply_text=_collect(replies))
+    update = types.SimpleNamespace(message=msg, effective_user=types.SimpleNamespace(id=UID))
+    asyncio.run(bot._handle_mix_answer(update, ctx, UID, "wrong"))
+    assert any("🆕" in (t or "") for t in replies)        # предъявление второго слова
+    assert ctx.user_data["review_pos"] == 1

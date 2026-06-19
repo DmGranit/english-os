@@ -803,6 +803,18 @@ async def on_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await _enter_mode(out, ctx, uid, mode, tmsg=q.message)
 
+async def _lesson_present(out, ctx, uid):
+    """B3: предъявить текущее слово урока (enc_pending + «Дальше ▶»).
+    out — callable(text, markup) — edit или reply_text; queue[review_pos] — текущее слово."""
+    queue = ctx.user_data.get("review_queue", [])
+    pos = ctx.user_data.get("review_pos", 0)
+    if pos >= len(queue):
+        return
+    ctx.user_data["enc_pending"] = True
+    await out(db.encoding_view(queue[pos]),
+              InlineKeyboardMarkup([[InlineKeyboardButton("Дальше ▶", callback_data="enc:next")]]))
+
+
 async def _enter_mode(out, ctx, uid, mode, tmsg=None):
     """Вход в режим. out(text, markup) — способ показа: edit (inline) или reply (клавиатура)."""
     ctx.user_data["mode"] = mode
@@ -837,10 +849,7 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         ctx.user_data["review_ok"]       = 0
         ctx.user_data["review_fail"]     = 0
         ctx.user_data["card_shown_at"]   = time.time()  # B3: card_shown_at завышен на шаг предъявления — уточнить в B3
-        first_wid = wids[0]
-        ctx.user_data["enc_pending"] = True       # после «Дальше ▶» — карточка-проверка
-        await out(db.encoding_view(first_wid),
-                  InlineKeyboardMarkup([[InlineKeyboardButton("Дальше ▶", callback_data="enc:next")]]))
+        await _lesson_present(out, ctx, uid)
         return
 
     elif mode == "review":
