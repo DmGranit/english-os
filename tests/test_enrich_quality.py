@@ -38,3 +38,15 @@ def test_no_sense_keeps_old_behaviour(fresh_db, monkeypatch):
     monkeypatch.setattr(llm, "chat", _qa_ok(gen))
     enrich.run(["menu"], user_id=UID)
     assert "Целевой смысл" not in captured["user"]              # без sense — старый промпт
+
+
+def test_validate_strips_null_root_and_bogus_idea_frame(fresh_db, monkeypatch):
+    bogus = json.dumps({"word": "water", "ru": "вода", "root": "null",
+                        "dna_idea": "НесуществующаяИдея", "thinking_frame": "НесуществующийФрейм",
+                        "scenario": "Universal", "level": "A1"})
+    monkeypatch.setattr(llm, "chat", _qa_ok(lambda s, m: bogus))
+    enrich.run(["water"], user_id=UID)
+    p = json.loads(fresh_db.list_pending(UID)[0]["payload"])
+    assert p["root"] is None                       # «null»-строка → None
+    assert p["dna_idea"] is None                   # идея не из таксономии → None (не форсим)
+    assert p["thinking_frame"] is None             # фрейм не из таксономии → None

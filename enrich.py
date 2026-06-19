@@ -117,13 +117,15 @@ def validate(payload, word):
             return max(lo, min(hi, int(v)))
         except (TypeError, ValueError):
             return default
+    raw_root = (payload.get("root") or "").strip()
+    root = None if raw_root.lower() in ("", "null", "none", "—", "-") else raw_root
     reg = (payload.get("register") or "neutral").strip().lower()
     lvl = (payload.get("level") or "B1").strip().upper()
     return {
         "word": word.strip(),
         "ru": ru,
         "dna_idea": payload.get("dna_idea"),
-        "root": (payload.get("root") or None),
+        "root": root,
         "family": as_list(payload.get("family")),
         "collocations": as_list(payload.get("collocations")),
         "phrasal": as_list(payload.get("phrasal")),
@@ -174,6 +176,10 @@ def enrich_word(word, ideas, frames, scenarios, scenario_override=None, sense=No
             payload["scenario"] = scenario_override
         elif payload.get("scenario") not in scenarios:   # фолбэк, если ИИ дал свой сценарий
             payload["scenario"] = "Universal"
+        if payload.get("dna_idea") not in ideas:
+            payload["dna_idea"] = None
+        if payload.get("thinking_frame") not in frames:
+            payload["thinking_frame"] = None
     return payload
 
 def run(words, user_id=db.DEFAULT_USER, scenario=None, senses=None):
