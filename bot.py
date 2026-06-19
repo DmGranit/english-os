@@ -1165,9 +1165,9 @@ async def _begin_scenario(msg, ctx, uid, scenario):
         "⏳ Готовлю сценарий…\n(чтобы закончить и разобрать ошибки — напиши «Итог»)",
         reply_markup=ReplyKeyboardRemove())
     db.ensure_user_state(uid)
-    wd = db.theme_words("scn", scenario, uid, n=4, band=db.get_band(uid))
-    ids = [w["word_id"] for w in wd]
-    db.start_learning(ids, uid, via="scenario")   # A1.3: не закрывает слот NEW в карте дня
+    ids = db.scenario_target_words(uid, scenario, n=4, band=db.get_band(uid))  # B4: сегодняшние слова приоритетно
+    wd = [w for i in ids if (w := db.get_word(i)) is not None]
+    db.start_learning(ids, uid, via="scenario")   # вводит только status='new'; сегодняшние box>=2 не трогает (A1.3)
     ctx.user_data.pop("awaiting_slot_hours", None)
     ctx.user_data.update(mode="scenario", history=[], scn_words=ids)
     scn_ref = db.scenario_ref_get(scenario)
