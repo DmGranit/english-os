@@ -1677,9 +1677,16 @@ async def _lesson_advance(ctx, uid, message):
     ctx.user_data["review_pos"] = ctx.user_data.get("review_pos", 0) + 1
     queue = ctx.user_data.get("review_queue", [])
     if ctx.user_data["review_pos"] >= len(queue):
-        ctx.user_data["mode"] = "flow"
-        await message.reply_text("🌅 Урок завершён! Слова теперь в очереди — вернутся на повторение 📅",
-                                 reply_markup=MAIN_KB)
+        rework = ctx.user_data.pop("rework_queue", [])
+        if rework:                              # B-enc3: как в _next_card — влить доработку
+            ctx.user_data["review_queue"].extend(rework)
+            ctx.user_data["rework_ids"] = set(rework)   # пометить — SRS не пишется
+            nxt = ctx.user_data["review_queue"][ctx.user_data["review_pos"]]
+            ctx.user_data["enc_pending"] = True
+            await message.reply_text(db.encoding_view(nxt),
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Дальше ▶", callback_data="enc:next")]]))
+        else:
+            await _finish_lesson(message, ctx, uid)
         return
     nxt = queue[ctx.user_data["review_pos"]]
     ctx.user_data["enc_pending"] = True
@@ -1741,8 +1748,12 @@ async def _record_review(ctx, uid, word_id, remembered, ms, card_type="self"):
         if word_id not in rq:
             rq.append(word_id)
 
-async def _finish_lesson(q, ctx, uid):
-    """Урок завершён: записать след → закрывает слот NEW в карте дня (B-enc1)."""
+async def _finish_lesson(message, ctx, uid):
+    """Урок завершён: записать след → закрывает слот NEW в карте дня (B-enc1).
+
+    message — объект с методом reply_text (telegram Message или любой его шим).
+    Принимает Message напрямую, чтобы вызов был одинаков из _next_card и _lesson_advance.
+    """
     ok   = ctx.user_data.get("review_ok", 0)
     fail = ctx.user_data.get("review_fail", 0)
     db.log_session(uid, "new")
@@ -1752,18 +1763,18 @@ async def _finish_lesson(q, ctx, uid):
               "rework_queue", "rework_ids"):     # B-enc3: подчистить rework-состояние
         ctx.user_data.pop(k, None)
     ctx.user_data["mode"] = "flow"
-    await q.edit_message_text(
+    await message.reply_text(
         f"🌅 Урок завершён!\n\n"
         f"Слов: {ok + fail}\n✅ Узнал: {ok}\n❌ Не вспомнил: {fail}\n\n"
         "Слова теперь в очереди — вернутся завтра на повторение 📅"
     )
     fresh = db.recognized_today(uid, limit=1)  # P1: продукция в день 1 по УЗНАННОМУ слову (вне SRS)
     if fresh:
-        await q.message.reply_text(
+        await message.reply_text(
             "⚡ Бонус: одно из сегодняшних слов — попробуешь сказать сам? "
             "Это превью продукции, в статистику не идёт.",
             reply_markup=_warm_kb(fresh[0]["word_id"]))
-    await q.message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
+    await message.reply_text(_next_action_text(uid), reply_markup=MAIN_KB)
 
 async def _next_card(q, ctx, uid):
     """Сдвинуть колоду: следующая карточка, rework-проход или финал."""
@@ -1775,7 +1786,7 @@ async def _next_card(q, ctx, uid):
             ctx.user_data["rework_ids"] = set(rework)   # пометить — SRS не пишется
             await _show_card(q, ctx, uid, reveal=False)
         elif ctx.user_data.get("mode") == "lesson":
-            await _finish_lesson(q, ctx, uid)
+            await _finish_lesson(q.message, ctx, uid)
         else:
             await _finish_review(q, ctx, uid)
     else:

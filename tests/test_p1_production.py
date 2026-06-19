@@ -74,7 +74,7 @@ def test_finish_lesson_offers_warm_preview_for_recognized(fresh_db, monkeypatch)
     _recognize(fresh_db, 1, box=2)                      # одно слово узнано сегодня
     ctx = types.SimpleNamespace(user_data={"mode": "lesson", "review_ok": 1, "review_fail": 0})
     q = _Q()
-    asyncio.run(bot._finish_lesson(q, ctx, UID))
+    asyncio.run(bot._finish_lesson(q.message, ctx, UID))
     texts = [t for t, _ in q.replies]
     assert any("⚡" in t for t in texts)                # превью предложено
     assert any("warm:go:1" in str(kb.to_dict()) for _, kb in q.replies if kb)  # кнопка на слово 1
@@ -87,5 +87,5 @@ def test_finish_lesson_no_preview_when_all_failed(fresh_db, monkeypatch):
     fresh_db.start_learning([1], UID)                  # слово осталось в box1 — провалено
     ctx = types.SimpleNamespace(user_data={"mode": "lesson", "review_ok": 0, "review_fail": 1})
     q = _Q()
-    asyncio.run(bot._finish_lesson(q, ctx, UID))
+    asyncio.run(bot._finish_lesson(q.message, ctx, UID))
     assert not any("⚡" in t for t, _ in q.replies)     # нечего продуцировать — не предлагаем

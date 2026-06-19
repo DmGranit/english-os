@@ -4,6 +4,38 @@ import db, bot
 from conftest import UID
 
 
+# ─── test RED: mix lesson finish calls log_session + backup (regression B3) ──
+
+def test_mix_lesson_finish_calls_log_session_and_backup(fresh_db, monkeypatch):
+    """Completing the lesson through _lesson_advance must call db.log_session(uid,'new')
+    and db.backup() — the side-effects previously skipped by the bare 'Урок завершён' reply."""
+    log_calls = []
+    backup_calls = []
+
+    monkeypatch.setattr(db, "log_session", lambda uid, slot: log_calls.append((uid, slot)))
+    monkeypatch.setattr(db, "backup", lambda: backup_calls.append(True))
+    monkeypatch.setattr(db, "recognized_today", lambda uid, limit=1: [])
+    # _next_action_text needs fresh_db to work
+    monkeypatch.setattr(bot, "_next_action_text", lambda uid: "Дальше →")
+
+    replies = []
+
+    async def fake_reply(text, reply_markup=None, **k):
+        replies.append(text)
+
+    # Queue exhausted: pos will advance past last item → lesson end
+    ctx = types.SimpleNamespace(user_data={
+        "review_queue": [1], "review_pos": 0, "mode": "lesson",
+        "review_ok": 1, "review_fail": 0,
+    })
+    msg = types.SimpleNamespace(reply_text=fake_reply)
+
+    asyncio.run(bot._lesson_advance(ctx, UID, msg))
+
+    assert (UID, "new") in log_calls, "log_session(uid,'new') must be called on lesson finish"
+    assert backup_calls, "db.backup() must be called on lesson finish"
+
+
 def test_exercise_assembly_when_family_decomposable(fresh_db):
     # invest (word_id 1) с гнездом, где investment = invest + -ment (уверенно)
     with fresh_db._conn() as c:
