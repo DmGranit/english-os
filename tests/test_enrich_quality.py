@@ -50,3 +50,17 @@ def test_validate_strips_null_root_and_bogus_idea_frame(fresh_db, monkeypatch):
     assert p["root"] is None                       # «null»-строка → None
     assert p["dna_idea"] is None                   # идея не из таксономии → None (не форсим)
     assert p["thinking_frame"] is None             # фрейм не из таксономии → None
+
+
+def test_valid_idea_frame_preserved(fresh_db, monkeypatch):
+    # таксономия с известными idea/frame, которые ДОЛЖНЫ сохраниться (позитив-путь)
+    monkeypatch.setattr(enrich, "_allowed",
+                        lambda: (["Trust"], ["Headline → Detail → Action"], ["Universal"]))
+    payload = json.dumps({"word": "rely", "ru": "полагаться", "dna_idea": "Trust",
+                          "thinking_frame": "Headline → Detail → Action",
+                          "scenario": "Universal", "level": "B1"})
+    monkeypatch.setattr(llm, "chat", _qa_ok(lambda s, m: payload))
+    enrich.run(["rely"], user_id=UID)
+    p = json.loads(fresh_db.list_pending(UID)[0]["payload"])
+    assert p["dna_idea"] == "Trust"                         # валидная идея сохранена, не занулена
+    assert p["thinking_frame"] == "Headline → Detail → Action"
