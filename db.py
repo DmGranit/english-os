@@ -1394,6 +1394,33 @@ def encoding_view(word_id):
         lines.append(f"📝 {w['example']}")
     return "\n".join(lines)
 
+def exercise_for_word(word_id):
+    """B3 Такт-2: построить упражнение-закрепление. Гнездовое (есть член с уверенным
+    аффиксом) → сборка этого члена; иначе → продукция RU→EN. Объективный зачёт."""
+    w = get_word(word_id)
+    if not w:
+        return {"kind": "production", "wid": word_id, "prompt": "", "expected": ""}
+    for member in (w.get("family") or []):
+        m = str(member).strip()
+        if not m or m.lower() == w["word"].lower():
+            continue
+        affix = meaning = None
+        mid = find_word_id(m)
+        if mid:
+            d = decompose(mid)
+            if d and d.get("affix"):
+                affix, meaning = d["affix"], d.get("affix_meaning")
+        if not affix:
+            det = detect_affix(m, base=w["word"])
+            if det:
+                affix, meaning = det["affix"], det.get("meaning_ru")
+        if affix:
+            hint = f" (подсказка: {meaning})" if meaning else ""
+            return {"kind": "assembly", "wid": word_id, "expected": m,
+                    "prompt": f"🧩 Собери производное: {w['word']} + {affix} → ?{hint}\n\nНапиши слово."}
+    return {"kind": "production", "wid": word_id, "expected": w["word"],
+            "prompt": f"✍️ Как сказать по-английски:\n«{w['ru']}»?\n\nНапиши ответ."}
+
 def branch_words(word_id, user_id=DEFAULT_USER, n=5):
     """«Ветка» слова: однокоренные + члены семьи, что есть отдельными словами в базе (без самого слова)."""
     w = get_word(word_id)
