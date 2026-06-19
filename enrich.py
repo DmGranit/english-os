@@ -162,9 +162,12 @@ def qa_payload(payload):
     return payload, "ok"
 
 
-def enrich_word(word, ideas, frames, scenarios, scenario_override=None):
+def enrich_word(word, ideas, frames, scenarios, scenario_override=None, sense=None):
+    user = f"Слово: {word}"
+    if sense:
+        user += f"\nЦелевой смысл: {sense} — переведи и разбери ИМЕННО этот смысл, не доминирующий."
     raw = llm.chat(_system_prompt(ideas, frames, scenarios),
-                   [{"role": "user", "content": f"Слово: {word}"}])
+                   [{"role": "user", "content": user}])
     payload = validate(_parse(raw), word)
     if payload:
         if scenario_override:                       # батч-наполнение темы: тег принудительный
@@ -173,10 +176,11 @@ def enrich_word(word, ideas, frames, scenarios, scenario_override=None):
             payload["scenario"] = "Universal"
     return payload
 
-def run(words, user_id=db.DEFAULT_USER, scenario=None):
+def run(words, user_id=db.DEFAULT_USER, scenario=None, senses=None):
     """scenario задаёт принудительный тег сценария всем словам (батч-наполнение темы)."""
     db.init_db()
     ideas, frames, scenarios = _allowed()
+    senses = senses or {}
     res = {"added": 0, "skipped": 0, "failed": 0}
     for w in words:
         w = w.strip()
@@ -186,7 +190,7 @@ def run(words, user_id=db.DEFAULT_USER, scenario=None):
             res["skipped"] += 1
             print(f"= {w}: уже в базе, пропуск")
             continue
-        payload = enrich_word(w, ideas, frames, scenarios, scenario_override=scenario)
+        payload = enrich_word(w, ideas, frames, scenarios, scenario_override=scenario, sense=senses.get(w))
         if not payload:
             res["failed"] += 1
             print(f"✗ {w}: ИИ не вернул валидный JSON")
