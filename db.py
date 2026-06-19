@@ -406,7 +406,7 @@ def _migrate(c):
         c.execute("ALTER TABLE reviews ADD COLUMN ms INTEGER")
     if "direction" not in cols:               # направление карточки: recog (EN→RU) | prod (RU→EN)
         c.execute("ALTER TABLE reviews ADD COLUMN direction TEXT")
-    if "card_type" not in cols:               # тип карточки: mcq|cloze|typed|assembly|self
+    if "card_type" not in cols:               # тип карточки: mcq|cloze|typed|assembly|prod_typed|self
         c.execute("ALTER TABLE reviews ADD COLUMN card_type TEXT")  # для честного A/B (несравнимы)
     ccols = {r["name"] for r in c.execute("PRAGMA table_info(content)").fetchall()}
     if ccols and "derivation" not in ccols:   # B1: разбор «база+аффикс» производного слова (JSON)
@@ -1742,7 +1742,7 @@ def recognized_today(user_id=DEFAULT_USER, limit=1):
 
 def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None, card_type=None):
     """Обновить SRS после повторения. remembered: True/False.
-    variant ('layered'/'flat'), ms (время ответа), card_type (mcq/cloze/typed/assembly/self)
+    variant ('layered'/'flat'), ms (время ответа), card_type (mcq/cloze/typed/assembly/prod_typed/self)
     — инструментовка для честного A/B (форматы несравнимы по ms и по типу усилия)."""
     today = _today()
     with _conn() as c:

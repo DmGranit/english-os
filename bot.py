@@ -236,6 +236,8 @@ async def _finish_session(ud, uid, send):
     """Свести сессию: ИТОГ от модели -> запись в базу -> отчёт через send(text).
     ud — user_data пользователя (история/режим). История после сведения очищается."""
     if not ud.get("history"):                      # пустая сессия — LLM не дёргаем
+        ud.pop("mix", None)                        # stale mix после стоп-слова не должен mis-grade следующий msg
+        ud.pop("enc_pending", None)                # сопутствующий pending тоже снимаем
         await send("Пока нечего подводить — мы ещё не общались в этой сессии 🙂 "
                    "Напиши пару фраз или нажми ☀️ Повторить.")
         return
@@ -695,7 +697,7 @@ def _clear_other_exercise(ud, current):
 # Все pending-«ждёт ответ» состояния: вход в режим обучения (NEW/REVIEW/SCENARIO/FLOW)
 # бросает их все — иначе брошенное упражнение (переживает рестарт через persist)
 # перехватывает напечатанный ответ режима раньше typed_wid (поймано живым смоуком 19.06).
-_PENDING_ANSWER_KEYS = ("gr1_card", "gr2_card", "ex1", "ex1_card", "warm_wid", "act_wid")
+_PENDING_ANSWER_KEYS = ("gr1_card", "gr2_card", "ex1", "ex1_card", "warm_wid", "act_wid", "mix")
 
 async def cmd_grammar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/grammar — трансформация времён по созревшим темам (SRS)."""
@@ -848,7 +850,7 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         ctx.user_data["review_pos"]      = 0
         ctx.user_data["review_ok"]       = 0
         ctx.user_data["review_fail"]     = 0
-        ctx.user_data["card_shown_at"]   = time.time()  # B3: card_shown_at завышен на шаг предъявления — уточнить в B3
+        ctx.user_data["card_shown_at"]   = time.time()
         await _lesson_present(out, ctx, uid)
         return
 
@@ -965,6 +967,9 @@ async def _process_user_text(update, ctx, uid, text):
                 return
             if ctx.user_data.get("warm_wid") and not re.search(r"[а-яёА-ЯЁ]", text):
                 await _handle_warm_answer(update, ctx, uid, text)
+                return
+            if ctx.user_data.get("mix") and not re.search(r"[а-яёА-ЯЁ]", text):
+                await _handle_mix_answer(update, ctx, uid, text)
                 return
         await _typing(update.message)
         await _finish_session(ctx.user_data, uid, update.message.reply_text)
@@ -1676,7 +1681,8 @@ async def _handle_mix_answer(update, ctx, uid, text):
     ok = given.lower() == expected.lower() or _one_edit_away(given, expected)
     head = "✅ Верно!" if ok else f"❌ Правильно: {expected}"
     await update.message.reply_text(head)
-    await _record_review(ctx, uid, mix["wid"], ok, None, card_type=mix["kind"])
+    ct = "assembly" if mix["kind"] == "assembly" else "prod_typed"
+    await _record_review(ctx, uid, mix["wid"], ok, None, card_type=ct)
     await _lesson_advance(ctx, uid, update.message)
 
 

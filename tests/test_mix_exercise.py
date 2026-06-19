@@ -148,7 +148,7 @@ def test_mix_answer_wrong_records_fail(fresh_db, monkeypatch):
     )
     asyncio.run(bot._handle_mix_answer(update, ctx, UID, "wrong_answer"))
     assert recorded["ok"] is False
-    assert recorded["ct"] == "production"
+    assert recorded["ct"] == "prod_typed"
     assert advanced.get("yes")
     assert any("deadline" in r for r in replies)
 
@@ -223,3 +223,80 @@ def test_new_lesson_full_loop_two_words(fresh_db, monkeypatch):
     asyncio.run(bot._handle_mix_answer(update, ctx, UID, "wrong"))
     assert any("🆕" in (t or "") for t in replies)        # предъявление второго слова
     assert ctx.user_data["review_pos"] == 1
+
+
+# ─── test (Finding 1): Cyrillic stop-word mid-mix must not misgrade next ─────
+
+def test_cyrillic_stopword_during_mix_does_not_misgrade_next(fresh_db, monkeypatch):
+    """Стоп-слово на кириллице в середине mix: должно завершить сессию, НЕ записать
+    grading, и очистить 'mix' — иначе следующее сообщение оценивается по stale mix."""
+    calls = []
+
+    async def rec(ctx, uid, wid, ok, ms, card_type=None):
+        calls.append((wid, card_type))
+
+    monkeypatch.setattr(bot, "_record_review", rec)
+
+    ctx = types.SimpleNamespace(user_data={
+        "mix": {"wid": 1, "expected": "investment", "kind": "assembly"},
+        "history": [],        # пустая история → early-return в _finish_session
+        "review_queue": [1],
+        "review_pos": 0,
+    })
+
+    replies = []
+
+    async def reply(text=None, **k):
+        replies.append(text)
+        return None
+
+    async def send_action(action): pass
+
+    update = types.SimpleNamespace(
+        message=types.SimpleNamespace(
+            reply_text=reply,
+            chat=types.SimpleNamespace(send_action=send_action, id=UID),
+        ),
+        effective_user=types.SimpleNamespace(id=UID),
+    )
+
+    asyncio.run(bot._process_user_text(update, ctx, UID, "стоп"))
+
+    assert "mix" not in ctx.user_data, "mix не очищен — повиснет и mis-grade следующее сообщение"
+    assert calls == [], "стоп-слово (кириллица) не должно записывать grading"
+
+
+# ─── test (Finding 2): production mix records card_type="prod_typed" ─────────
+
+def test_mix_production_records_prod_typed(fresh_db, monkeypatch):
+    """kind='production' должен сохраняться как card_type='prod_typed', не 'production'."""
+    recorded = {}
+
+    async def rec(ctx, uid, wid, ok, ms, card_type=None):
+        recorded.update(wid=wid, ok=ok, ct=card_type)
+
+    async def adv(ctx, uid, message):
+        pass
+
+    monkeypatch.setattr(bot, "_record_review", rec)
+    monkeypatch.setattr(bot, "_lesson_advance", adv)
+
+    ctx = types.SimpleNamespace(user_data={
+        "mix": {"wid": 2, "expected": "deadline", "kind": "production"},
+        "review_queue": [2], "review_pos": 0,
+    })
+
+    replies = []
+
+    async def fake_reply(text, **k):
+        replies.append(text)
+
+    msg = types.SimpleNamespace(reply_text=fake_reply)
+    update = types.SimpleNamespace(
+        message=msg,
+        effective_user=types.SimpleNamespace(id=UID),
+    )
+    asyncio.run(bot._handle_mix_answer(update, ctx, UID, "deadline"))
+    assert recorded["ct"] == "prod_typed", (
+        f"card_type должен быть 'prod_typed', получен '{recorded.get('ct')}'"
+    )
