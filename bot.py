@@ -989,6 +989,10 @@ async def _process_user_text(update, ctx, uid, text):
         await _handle_warm_answer(update, ctx, uid, text)
         return
 
+    if ctx.user_data.get("mix"):                 # B3: ждём ответ упражнения-микс
+        await _handle_mix_answer(update, ctx, uid, text)
+        return
+
     if ctx.user_data.get("typed_wid"):           # ждём напечатанный ответ карточки box 3
         await _handle_typed_answer(update, ctx, uid, text)
         return
@@ -1654,6 +1658,35 @@ async def _handle_warm_answer(update, ctx, uid, text):
                "повторения сделают своё 🌱 (превью в статистику не идёт)")
     await update.message.reply_text(msg)
 
+
+async def _handle_mix_answer(update, ctx, uid, text):
+    """B3 Такт-2: объективный зачёт упражнения-микс → запись в SRS → следующее слово."""
+    mix = ctx.user_data.pop("mix")
+    given = (text or "").strip()
+    expected = mix["expected"]
+    ok = given.lower() == expected.lower() or _one_edit_away(given, expected)
+    head = "✅ Верно!" if ok else f"❌ Правильно: {expected}"
+    await update.message.reply_text(head)
+    await _record_review(ctx, uid, mix["wid"], ok, None, card_type=mix["kind"])
+    await _lesson_advance(ctx, uid, update.message)
+
+
+async def _lesson_advance(ctx, uid, message):
+    """Сдвинуть урок к следующему слову: показать его предъявление (B2) + «Дальше»,
+    либо финал урока. (Reuse-обёртка над _next_card для текстового пути B3.)"""
+    ctx.user_data["review_pos"] = ctx.user_data.get("review_pos", 0) + 1
+    queue = ctx.user_data.get("review_queue", [])
+    if ctx.user_data["review_pos"] >= len(queue):
+        ctx.user_data["mode"] = "flow"
+        await message.reply_text("🌅 Урок завершён! Слова теперь в очереди — вернутся на повторение 📅",
+                                 reply_markup=MAIN_KB)
+        return
+    nxt = queue[ctx.user_data["review_pos"]]
+    ctx.user_data["enc_pending"] = True
+    await message.reply_text(db.encoding_view(nxt),
+                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Дальше ▶", callback_data="enc:next")]]))
+
+
 # ---------- нажатия кнопок в карточках повторения ----------
 async def on_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1801,14 +1834,19 @@ async def on_flip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=_review_kb(reveal=True))
 
 async def on_enc_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """B2: «Дальше ▶» после богатого предъявления — показать первую карточку-проверку."""
+    """B3 Такт-2: «Дальше ▶» после богатого предъявления — показать упражнение-микс."""
     q = update.callback_query
     await q.answer()
     uid = _learner(update)
     if not ctx.user_data.pop("enc_pending", None):
         return
-    text, kb = _card_payload(ctx, uid)            # существующая карточка-проверка первого слова
-    await q.edit_message_text(text, reply_markup=kb)
+    queue = ctx.user_data.get("review_queue") or []
+    pos = ctx.user_data.get("review_pos", 0)
+    if pos >= len(queue):
+        return
+    ex = db.exercise_for_word(queue[pos])
+    ctx.user_data["mix"] = {"wid": ex["wid"], "expected": ex["expected"], "kind": ex["kind"]}
+    await q.edit_message_text(ex["prompt"])
 
 async def on_assembly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Конструктор SVOMPT (box 4): тапы по словам, результат — объективный (по ошибкам)."""
