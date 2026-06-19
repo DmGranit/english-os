@@ -1740,6 +1740,21 @@ def recognized_today(user_id=DEFAULT_USER, limit=1):
                          (user_id, _today(), limit)).fetchall()
     return [_row_to_word(r) for r in rows]
 
+def scenario_target_words(user_id=DEFAULT_USER, scenario=None, n=4, today_max=3, band=None):
+    """B4 Такт-3: целевые слова сценария — приоритетно СЕГОДНЯШНИЕ выученные
+    (recognized_today, box>=2 promoted сегодня), добор словами темы сценария. Дедуп, кап n.
+    Нет сегодняшних → только тема (graceful)."""
+    ids, seen = [], set()
+    for w in recognized_today(user_id, limit=today_max):
+        if w["word_id"] not in seen:
+            seen.add(w["word_id"]); ids.append(w["word_id"])
+    for w in theme_words("scn", scenario, user_id, n=n, band=band):
+        if len(ids) >= n:
+            break
+        if w["word_id"] not in seen:
+            seen.add(w["word_id"]); ids.append(w["word_id"])
+    return ids[:n]
+
 def review(word_id, remembered, user_id=DEFAULT_USER, variant=None, ms=None, card_type=None):
     """Обновить SRS после повторения. remembered: True/False.
     variant ('layered'/'flat'), ms (время ответа), card_type (mcq/cloze/typed/assembly/prod_typed/self)
