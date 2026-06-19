@@ -836,7 +836,7 @@ async def _enter_mode(out, ctx, uid, mode, tmsg=None):
         ctx.user_data["review_pos"]      = 0
         ctx.user_data["review_ok"]       = 0
         ctx.user_data["review_fail"]     = 0
-        ctx.user_data["card_shown_at"]   = time.time()
+        ctx.user_data["card_shown_at"]   = time.time()  # B3: card_shown_at завышен на шаг предъявления — уточнить в B3
         first_wid = wids[0]
         ctx.user_data["enc_pending"] = True       # после «Дальше ▶» — карточка-проверка
         await out(db.encoding_view(first_wid),
@@ -1805,7 +1805,8 @@ async def on_enc_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = _learner(update)
-    ctx.user_data.pop("enc_pending", None)
+    if not ctx.user_data.pop("enc_pending", None):
+        return
     text, kb = _card_payload(ctx, uid)            # существующая карточка-проверка первого слова
     await q.edit_message_text(text, reply_markup=kb)
 
@@ -2669,7 +2670,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_warm, pattern=r"^warm:"))   # превью продукции
     app.add_handler(CallbackQueryHandler(on_mcq, pattern=r"^mcq:"))
     app.add_handler(CallbackQueryHandler(on_flip, pattern=r"^flip:"))
-    app.add_handler(CallbackQueryHandler(on_enc_next, pattern="^enc:next$"))
+    app.add_handler(CallbackQueryHandler(on_enc_next, pattern=r"^enc:next$"))
     app.add_handler(CallbackQueryHandler(on_activation, pattern=r"^act:"))
     app.add_handler(CallbackQueryHandler(on_rate, pattern=r"^rate:"))
     app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))

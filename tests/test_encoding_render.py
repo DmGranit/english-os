@@ -66,3 +66,18 @@ def test_new_lesson_starts_with_encoding_view(fresh_db, monkeypatch):
     asyncio.run(bot._enter_mode(out, ctx, UID, "new"))
     assert any("invest" in (t or "") and "🆕" in (t or "") for t, _ in sent)  # предъявление первым
     assert ctx.user_data.get("enc_pending")                                   # помечен шаг проверки
+
+
+def test_on_enc_next_ignores_stale_tap(fresh_db):
+    # нет enc_pending и пустая колода → тап «Дальше» не падает и ничего не шлёт
+    import types, asyncio
+    edited = []
+    class Q:
+        data = "enc:next"
+        async def answer(self, *a, **k): pass
+        async def edit_message_text(self, *a, **k): edited.append(a)
+    update = types.SimpleNamespace(callback_query=Q(),
+                                   effective_user=types.SimpleNamespace(id=UID))
+    ctx = types.SimpleNamespace(user_data={})            # no enc_pending, no review_queue
+    asyncio.run(bot.on_enc_next(update, ctx))
+    assert edited == []                                  # ранний возврат, без падения, без карточки
