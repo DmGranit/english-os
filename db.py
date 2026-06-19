@@ -987,10 +987,12 @@ def affix_info(affix):
         return dict(r) if r else None
 
 def set_derivation(word_id, base, affix, gloss=None):
-    """B1: записать разбор словообразования производного слова (база+аффикс) как JSON."""
+    """B1/B5: записать разбор словообразования (база+аффикс) как JSON. Возвращает
+    True, если слово существует и строка обновлена, иначе False (граф. skip)."""
     payload = json.dumps({"base": base, "affix": affix, "gloss": gloss}, ensure_ascii=False)
     with _conn() as c:
-        c.execute("UPDATE content SET derivation=? WHERE word_id=?", (payload, word_id))
+        cur = c.execute("UPDATE content SET derivation=? WHERE word_id=?", (payload, word_id))
+        return cur.rowcount > 0
 
 def decompose(word_id):
     """B1: разбор «база+аффикс» слова + значение аффикса из affix_ref. None, если нет.
