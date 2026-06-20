@@ -1061,6 +1061,27 @@ def detect_affix(word, base=None):
             return dict(a, stem=stem)
     return None
 
+def valid_derivation(word, base, affix):
+    """B5.2: структурный гейт разбора «база+аффикс». True, только если affix есть в
+    affix_ref, база короче слова и выровнена на нужном конце (суффикс — слово начинается
+    базой c допуском потери e и y->i; префикс — слово кончается базой). Не проверяет, что
+    база — реальное слово (это делает драйвер по словарю). Корректность > полнота."""
+    w = (word or "").strip().lower()
+    b = (base or "").strip().lower()
+    info = affix_info((affix or "").strip())
+    if not info:
+        return False
+    if len(b) < 3 or len(b) >= len(w):
+        return False
+    if info["kind"] == "prefix":
+        return w.endswith(b)
+    cands = {b}
+    if b.endswith("e"):
+        cands.add(b[:-1])
+    if b.endswith("y"):
+        cands.add(b[:-1] + "i")
+    return any(w.startswith(x) for x in cands)
+
 def bre_ame_for_word(word):
     """BrE/AmE запись для слова (None, если нет). C3.Δb."""
     if not word:
