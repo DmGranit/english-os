@@ -1391,6 +1391,11 @@ def _network_block(word):
     ri = db.root_info(word.get("root"))
     if ri:
         lines.append(f"🌳 корень: {word['root']} ({ri['idea']}; {ri['origin']})")
+    d = db.decompose(word.get("word_id"))
+    if d:
+        am = (d.get("affix_meaning") or "").split(";")[0].strip()
+        tail = f" — {am}" if am else ""
+        lines.append(f"🧩 разбор: {d['base']} + {d['affix']}{tail}")
     if word.get("family"):
         lines.append("🌱 семья: " + ", ".join(word["family"]))
     if word.get("collocations"):
