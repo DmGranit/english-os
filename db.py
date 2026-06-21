@@ -994,6 +994,21 @@ def set_derivation(word_id, base, affix, gloss=None):
         cur = c.execute("UPDATE content SET derivation=? WHERE word_id=?", (payload, word_id))
         return cur.rowcount > 0
 
+def set_family(word_id, family):
+    """Фаза 2: записать family (список) в content + переиндексировать ТОЛЬКО word_family.
+    collocations/phrasal НЕ трогаем (потому не зовём _index_word_links целиком).
+    Возвращает True, если слово существует, иначе False."""
+    members = [str(m).strip() for m in (family or []) if str(m).strip()]
+    payload = json.dumps(members, ensure_ascii=False)
+    with _conn() as c:
+        cur = c.execute("UPDATE content SET family=? WHERE word_id=?", (payload, word_id))
+        if cur.rowcount == 0:
+            return False
+        c.execute("DELETE FROM word_family WHERE word_id=?", (word_id,))
+        for m in members:
+            c.execute("INSERT INTO word_family (word_id, member) VALUES (?,?)", (word_id, m))
+        return True
+
 def decompose(word_id):
     """B1: разбор «база+аффикс» слова + значение аффикса из affix_ref. None, если нет.
     Ключ affix_meaning присутствует ТОЛЬКО если аффикс найден в affix_ref —
