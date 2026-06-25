@@ -1312,6 +1312,23 @@ def mcq_options(word_id, k=4):
                     picked.append(dict(r)); seen_ru.add(r["ru"])
     return picked + [{"word_id": word_id, "word": w["word"], "ru": w["ru"]}]
 
+def morpho_lines(word):
+    """Морфо-троица (корень / разбор / семья) для любого рендера — единый формат и иконки.
+    word — dict из get_word (нужны ключи root, word_id, family). Пустые поля пропускаются.
+    Порядок строго: корень → разбор → семья."""
+    lines = []
+    ri = root_info(word.get("root"))
+    if ri:
+        lines.append(f"🌳 корень {word['root']}: {ri['idea']} · {ri['origin']}")
+    d = decompose(word.get("word_id"))
+    if d:
+        am = (d.get("affix_meaning") or "").split(";")[0].strip()
+        tail = f" — {am}" if am else ""
+        lines.append(f"🧩 разбор: {d['base']} + {d['affix']}{tail}")
+    if word.get("family"):
+        lines.append("🌱 семья: " + ", ".join(word["family"]))
+    return lines
+
 def deep_view(word_id):
     """Глубокий разбор слова ИЗ ГРАФА (для кнопки «🔍 Глубже»).
     C3: += IPA, particle_logic (Δa), BrE/AmE (Δb), confuse-ловушка."""
