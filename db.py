@@ -1346,20 +1346,16 @@ def deep_view(word_id):
             ipa.append(f"🇬🇧 /{w['ipa_uk']}/")
         lines.append("🔊 " + "  ".join(ipa))
 
-    # Корень + семья
-    ri = root_info(w["root"])
-    if ri:
-        lines.append(f"🌳 корень {w['root']}: {ri['idea']} · {ri['origin']}")
-    if w["family"]:
-        lines.append("🌱 семья: " + ", ".join(w["family"]))
+    # Морфо-троица (корень / разбор / семья) — единый помощник
+    lines += morpho_lines(w)
     if w["root"] and w["root"] != "—":
         sib = [x["word"] for x in words_by_root(w["root"]) if x["word"] != w["word"]]
         if sib:
-            lines.append("🧩 однокоренные в базе: " + ", ".join(sib))
+            lines.append("🌿 однокоренные в базе: " + ", ".join(sib))
 
     # Коллокации
     if w["collocations"]:
-        lines.append("💬 коллокации: " + ", ".join(w["collocations"]))
+        lines.append("🔗 коллокации: " + ", ".join(w["collocations"]))
 
     # C3.Δa: логика предлога в фразовых глаголах
     ph_logic = phrasal_logic_for_word(w["word"])
