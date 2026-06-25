@@ -1387,17 +1387,7 @@ def _card_format(wid, box, opts_n=0, has_cloze=False, date=None):
 
 def _network_block(word):
     """Блок «сети» для layered-карточки: связи слова (проверенные данные из базы)."""
-    lines = []
-    ri = db.root_info(word.get("root"))
-    if ri:
-        lines.append(f"🌳 корень: {word['root']} ({ri['idea']}; {ri['origin']})")
-    d = db.decompose(word.get("word_id"))
-    if d:
-        am = (d.get("affix_meaning") or "").split(";")[0].strip()
-        tail = f" — {am}" if am else ""
-        lines.append(f"🧩 разбор: {d['base']} + {d['affix']}{tail}")
-    if word.get("family"):
-        lines.append("🌱 семья: " + ", ".join(word["family"]))
+    lines = db.morpho_lines(word)
     if word.get("collocations"):
         lines.append("🔗 коллокации: " + ", ".join(word["collocations"]))
     if word.get("thinking_frame"):
