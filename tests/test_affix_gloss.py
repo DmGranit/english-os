@@ -51,3 +51,40 @@ def test_render_default_when_no_affix_gloss(fresh_db):
     db.set_derivation(1, base="form", affix="in-")
     line = next(l for l in db.morpho_lines(db.get_word(1)) if l.startswith("🧩 разбор"))
     assert "отрицание (не-)" in line
+
+
+# ---------- гнездо: encoding_view / exercise_for_word предпочитают affix_gloss члена ----------
+
+def _seed_nest_member(fresh_db):
+    """word 1 (invest) с гнездом из revenue (word 3); revenue — in-дериватив с affix_gloss."""
+    with db._conn() as c:
+        c.execute("INSERT OR REPLACE INTO affix_ref (affix, kind, meaning_ru) "
+                  "VALUES ('in-','prefix','отрицание (не-)')")
+        c.execute("UPDATE content SET family='[\"revenue\"]' WHERE word_id=1")
+    db.set_derivation(3, base="form", affix="in-")    # revenue = тест-член с разбором
+    db.set_affix_gloss(3, "в-/внутрь")
+
+
+def test_encoding_view_member_prefers_affix_gloss(fresh_db):
+    _seed_nest_member(fresh_db)
+    text = db.encoding_view(1)
+    assert "в-/внутрь" in text
+    assert "отрицание" not in text
+
+
+def test_encoding_view_member_default_when_no_affix_gloss(fresh_db):
+    with db._conn() as c:
+        c.execute("INSERT OR REPLACE INTO affix_ref (affix, kind, meaning_ru) "
+                  "VALUES ('in-','prefix','отрицание (не-)')")
+        c.execute("UPDATE content SET family='[\"revenue\"]' WHERE word_id=1")
+    db.set_derivation(3, base="form", affix="in-")    # без affix_gloss
+    text = db.encoding_view(1)
+    assert "отрицание (не-)" in text
+
+
+def test_exercise_hint_prefers_affix_gloss(fresh_db):
+    _seed_nest_member(fresh_db)
+    ex = db.exercise_for_word(1)
+    assert ex["kind"] == "assembly"
+    assert "в-/внутрь" in ex["prompt"]
+    assert "отрицание" not in ex["prompt"]

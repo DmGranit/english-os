@@ -1439,7 +1439,8 @@ def encoding_view(word_id):
         if mid:
             d = decompose(mid)
             if d and d.get("affix"):
-                info = {"affix": d["affix"], "meaning_ru": d.get("affix_meaning")}
+                info = {"affix": d["affix"],
+                        "meaning_ru": (d.get("affix_gloss") or "").strip() or d.get("affix_meaning")}
         if not info:
             det = detect_affix(m, base=w["word"])
             if det:
@@ -1482,7 +1483,7 @@ def exercise_for_word(word_id):
         if mid:
             d = decompose(mid)
             if d and d.get("affix"):
-                affix, meaning = d["affix"], d.get("affix_meaning")
+                affix, meaning = d["affix"], (d.get("affix_gloss") or "").strip() or d.get("affix_meaning")
         if not affix:
             det = detect_affix(m, base=w["word"])
             if det:
