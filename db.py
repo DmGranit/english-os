@@ -994,6 +994,28 @@ def set_derivation(word_id, base, affix, gloss=None):
         cur = c.execute("UPDATE content SET derivation=? WHERE word_id=?", (payload, word_id))
         return cur.rowcount > 0
 
+def set_affix_gloss(word_id, affix_gloss):
+    """Пер-слово смысл аффикса (override affix_ref в строке разбора). Вмёрживает
+    affix_gloss в существующий derivation-JSON, НЕ трогая base/affix/gloss.
+    Пустой/None — удаляет ключ (идемпотентный откат). Возвращает True, если
+    derivation есть, валиден и строка обновлена; иначе False."""
+    with _conn() as c:
+        r = c.execute("SELECT derivation FROM content WHERE word_id=?", (word_id,)).fetchone()
+        if not r or not r["derivation"]:
+            return False
+        try:
+            d = json.loads(r["derivation"])
+        except (ValueError, TypeError):
+            return False
+        ag = (affix_gloss or "").strip()
+        if ag:
+            d["affix_gloss"] = ag
+        else:
+            d.pop("affix_gloss", None)
+        payload = json.dumps(d, ensure_ascii=False)
+        cur = c.execute("UPDATE content SET derivation=? WHERE word_id=?", (payload, word_id))
+        return cur.rowcount > 0
+
 def set_family(word_id, family):
     """Фаза 2: записать family (список) в content + переиндексировать ТОЛЬКО word_family.
     collocations/phrasal НЕ трогаем (потому не зовём _index_word_links целиком).
