@@ -1344,7 +1344,7 @@ def morpho_lines(word):
         lines.append(f"🌳 корень {word['root']}: {ri['idea']} · {ri['origin']}")
     d = decompose(word.get("word_id"))
     if d:
-        am = (d.get("affix_meaning") or "").split(";")[0].strip()
+        am = (d.get("affix_gloss") or "").strip() or (d.get("affix_meaning") or "").split(";")[0].strip()
         tail = f" — {am}" if am else ""
         lines.append(f"🧩 разбор: {d['base']} + {d['affix']}{tail}")
     if word.get("family"):

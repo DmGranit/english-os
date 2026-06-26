@@ -29,3 +29,25 @@ def test_set_affix_gloss_empty_removes_key(fresh_db):
     assert "affix_gloss" in db.decompose(1)
     assert db.set_affix_gloss(1, "") is True
     assert "affix_gloss" not in db.decompose(1)
+
+
+# ---------- рендер: affix_gloss перебивает дефолт affix_ref ----------
+
+def test_render_affix_gloss_overrides_default(fresh_db):
+    with db._conn() as c:
+        c.execute("INSERT OR REPLACE INTO affix_ref (affix, kind, meaning_ru) "
+                  "VALUES ('in-','prefix','отрицание (не-)')")
+    db.set_derivation(1, base="form", affix="in-")        # word 1 = invest (переиспользуем строку)
+    db.set_affix_gloss(1, "в-/внутрь")
+    line = next(l for l in db.morpho_lines(db.get_word(1)) if l.startswith("🧩 разбор"))
+    assert "в-/внутрь" in line
+    assert "отрицание" not in line
+
+
+def test_render_default_when_no_affix_gloss(fresh_db):
+    with db._conn() as c:
+        c.execute("INSERT OR REPLACE INTO affix_ref (affix, kind, meaning_ru) "
+                  "VALUES ('in-','prefix','отрицание (не-)')")
+    db.set_derivation(1, base="form", affix="in-")
+    line = next(l for l in db.morpho_lines(db.get_word(1)) if l.startswith("🧩 разбор"))
+    assert "отрицание (не-)" in line
