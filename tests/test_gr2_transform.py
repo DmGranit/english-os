@@ -152,12 +152,16 @@ def test_clear_other_exercise_isolation():
 
 
 def test_transform_exact_grader():
-    """exact-грейдер: нормализация регистра/пробелов/пунктуации + толерантность к опечатке."""
+    """GR2 exact-грейдер: ТОЛЬКО нормализация (регистр/хвостовая пунктуация/пробелы); БЕЗ
+    допуска-на-опечатку. Для трансформации времён одна буква формы (build/built) — это
+    грамматика, а не опечатка; толерантность к опечаткам/синонимам отдана узкому LLM-чеку."""
     from bot import _transform_exact_ok
     assert _transform_exact_ok("I went to work", "I went to work")
-    assert _transform_exact_ok("  i went to work.  ", "I went to work")   # нормализация
-    assert _transform_exact_ok("I went to wrok", "I went to work")        # 1 опечатка
-    assert not _transform_exact_ok("I go to work", "I went to work")      # неверное время
+    assert _transform_exact_ok("  i went to work.  ", "I went to work")     # нормализация
+    assert not _transform_exact_ok("I go to work", "I went to work")        # неверное время
+    # near-miss формы НЕ должны проходить exact (баг build/built — раньше _one_edit_away засчитывал)
+    assert not _transform_exact_ok("They build houses", "They built houses")
+    assert not _transform_exact_ok("I went to wrok", "I went to work")      # опечатка → теперь не exact (уйдёт в LLM)
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────────
